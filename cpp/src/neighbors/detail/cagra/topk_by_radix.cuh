@@ -18,7 +18,7 @@
 #include "topk_for_cagra/topk_core.cuh"
 
 namespace cuvs::neighbors::cagra::detail {
-namespace single_cta_search {
+namespace filtered_single_cta_search {
 
 template <unsigned MAX_INTERNAL_TOPK>
 struct topk_by_radix_sort_base {
@@ -87,5 +87,5 @@ TOP_FUNC_PARTIAL_SPECIALIZATION(256);
 TOP_FUNC_PARTIAL_SPECIALIZATION(512);
 TOP_FUNC_PARTIAL_SPECIALIZATION(1024);
 
-}  // namespace single_cta_search
+}  // namespace filtered_single_cta_search
 }  // namespace cuvs::neighbors::cagra::detail

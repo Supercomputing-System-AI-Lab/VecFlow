@@ -158,6 +158,8 @@ enum class search_algo {
   /** For small batch sizes. */
   MULTI_CTA,
   MULTI_KERNEL,
+  /** For filtered search. */
+  SINGLE_CTA_FILTERED,
   AUTO
 };
 
@@ -1068,6 +1070,19 @@ void search(raft::resources const& res,
             const cuvs::neighbors::filtering::base_filter& sample_filter =
               cuvs::neighbors::filtering::none_sample_filter{});
 
+// query label, index_map, label_size, label_offset
+void filtered_search(raft::resources const& res,
+                     cuvs::neighbors::cagra::search_params const& params,
+                     const cuvs::neighbors::cagra::index<float, uint32_t>& index,
+                     raft::device_matrix_view<const float, int64_t, raft::row_major> queries,
+                     raft::device_matrix_view<uint32_t, int64_t, raft::row_major> neighbors,
+                     raft::device_matrix_view<float, int64_t, raft::row_major> distances,
+                     raft::device_vector_view<uint32_t, int64_t> query_labels,
+                     raft::device_vector_view<uint32_t, int64_t> index_map,
+                     raft::device_vector_view<uint32_t, int64_t> label_size,
+                     raft::device_vector_view<uint32_t, int64_t> label_offset,
+                     const cuvs::neighbors::filtering::base_filter& sample_filter = 
+                       cuvs::neighbors::filtering::none_sample_filter{});
 /**
  * @brief Search ANN using the constructed index.
  *
