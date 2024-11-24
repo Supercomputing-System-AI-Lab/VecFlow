@@ -904,6 +904,10 @@ struct alignas(kCacheLineBytes) job_desc_t {
     index_type* result_indices_ptr;       // [num_queries, top_k]
     distance_type* result_distances_ptr;  // [num_queries, top_k]
     const data_type* queries_ptr;         // [num_queries, dataset_dim]
+    const uint32_t* query_labels_ptr;    // [num_queries]
+    const uint32_t* index_map_ptr;       // [graph size]
+    const uint32_t* label_size_ptr;     // [num_labels]
+    const uint32_t* label_offset_ptr;   // [num_labels]
     uint32_t top_k;
     uint32_t n_queries;
   };
@@ -1007,9 +1011,16 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
     auto* result_indices_ptr   = job_descriptor.value.result_indices_ptr;
     auto* result_distances_ptr = job_descriptor.value.result_distances_ptr;
     auto* queries_ptr          = job_descriptor.value.queries_ptr;
+    auto* query_labels_ptr     = job_descriptor.value.query_labels_ptr;
+    auto* index_map_ptr         = job_descriptor.value.index_map_ptr;
+    auto* label_size_ptr       = job_descriptor.value.label_size_ptr;
+    auto* label_offset_ptr    = job_descriptor.value.label_offset_ptr;
     auto top_k                 = job_descriptor.value.top_k;
     auto n_queries             = job_descriptor.value.n_queries;
     auto query_id              = worker_data.value.query_id;
+    auto label_id              = query_labels_ptr[query_id];
+    auto label_size            = label_size_ptr[label_id];
+    auto label_offset          = label_offset_ptr[label_id];
 
     // work phase
     search_core<MAX_ITOPK,
@@ -1021,6 +1032,9 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
                                  top_k,
                                  dataset_desc,
                                  queries_ptr,
+                                 index_map_ptr,
+                                 label_size,
+                                 label_offset,
                                  knn_graph,
                                  graph_degree,
                                  num_distilation,
@@ -1731,6 +1745,10 @@ struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_b
       jd.result_indices_ptr   = nullptr;
       jd.result_distances_ptr = nullptr;
       jd.queries_ptr          = nullptr;
+      jd.query_labels_ptr     = nullptr;
+      jd.index_map_ptr        = nullptr;
+      jd.label_size_ptr       = nullptr;
+      jd.label_offset_ptr    = nullptr;
       jd.top_k                = 0;
       jd.n_queries            = 0;
       job_descriptors_ptr[i].completion_flag.store(false);
@@ -1805,6 +1823,10 @@ struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_b
   void launch(index_type* result_indices_ptr,       // [num_queries, top_k]
               distance_type* result_distances_ptr,  // [num_queries, top_k]
               const data_type* queries_ptr,         // [num_queries, dataset_dim]
+              const uint32_t* query_labels_ptr,    // [num_queries]
+              const uint32_t* index_map_ptr,       // [graph size]
+              const uint32_t* label_size_ptr,    // [num_labels]
+              const uint32_t* label_offset_ptr,  // [num_labels]
               uint32_t num_queries,
               uint32_t top_k)
   {
@@ -1820,6 +1842,10 @@ struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_b
                           jd.result_indices_ptr   = result_indices_ptr;
                           jd.result_distances_ptr = result_distances_ptr;
                           jd.queries_ptr          = queries_ptr;
+                          jd.query_labels_ptr     = query_labels_ptr;
+                          jd.index_map_ptr        = index_map_ptr;
+                          jd.label_size_ptr       = label_size_ptr;
+                          jd.label_offset_ptr     = label_offset_ptr;
                           jd.top_k                = top_k;
                           jd.n_queries            = num_queries;
                           cflag->store(false, cuda::memory_order_relaxed);
@@ -1993,7 +2019,7 @@ control is returned in this thread (in persistent_runner_t constructor), so we'r
                             sample_filter,
                             ps.persistent_lifetime,
                             ps.persistent_device_usage)
-      ->launch(topk_indices_ptr, topk_distances_ptr, queries_ptr, num_queries, topk);
+      ->launch(topk_indices_ptr, topk_distances_ptr, queries_ptr, query_labels_ptr, index_map_ptr, label_size_ptr, label_offset_ptr, num_queries, topk);
   } else {
     using descriptor_base_type = dataset_descriptor_base_t<DataT, IndexT, DistanceT>;
     auto kernel                = search_kernel_config<false, descriptor_base_type, SampleFilterT>::
