@@ -59,7 +59,7 @@ void cagra_build_search_variants(
   using namespace cuvs::neighbors;
 
   // Number of neighbors to search
-  int64_t topk = 100;
+  int64_t topk = 10;
   // We split the queries set into three subsets for our experiment, one for a
   // sanity check and two for measuring the performance.
   int64_t n_queries_a = queries.extent(0) / 2;
