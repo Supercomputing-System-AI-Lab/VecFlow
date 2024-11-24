@@ -261,6 +261,9 @@ if(BUILD_SHARED_LIBS)
     src/neighbors/detail/cagra/search_single_cta_int8_uint32.cu
     src/neighbors/detail/cagra/search_single_cta_uint8_uint32.cu
     src/neighbors/detail/cagra/filtered_search_single_cta_float_uint32.cu
+    src/neighbors/detail/cagra/filtered_search_single_cta_half_uint32.cu
+    src/neighbors/detail/cagra/filtered_search_single_cta_int8_uint32.cu
+    src/neighbors/detail/cagra/filtered_search_single_cta_uint8_uint32.cu
   )
 
   file(GLOB_RECURSE compute_distance_sources "src/neighbors/detail/cagra/compute_distance_*.cu")

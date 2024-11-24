@@ -111,8 +111,7 @@ void search_main_core(raft::resources const& res,
 template <typename DataT,
           typename IndexT,
           typename DistanceT,
-          typename CagraSampleFilterT,
-          typename SampleFilterT>
+          typename CagraSampleFilterT>
 void filtered_search_main_core(raft::resources const& res,
                                search_params params,
                                const dataset_descriptor_host<DataT, IndexT, DistanceT>& dataset_desc,
