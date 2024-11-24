@@ -359,7 +359,7 @@ struct search_plan_impl : public search_plan_impl_base {
       }
     }
     if (algo != search_algo::SINGLE_CTA && algo != search_algo::MULTI_CTA &&
-        algo != search_algo::MULTI_KERNEL) {
+        algo != search_algo::MULTI_KERNEL && algo != search_algo::SINGLE_CTA_FILTERED) {
       error_message += "An invalid kernel mode has been given: " + std::to_string((int)algo) + "";
     }
     if (thread_block_size != 0 && thread_block_size != 64 && thread_block_size != 128 &&

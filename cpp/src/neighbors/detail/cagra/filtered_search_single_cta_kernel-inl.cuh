@@ -586,7 +586,18 @@ __device__ void search_core(
                                           label_offset,
                                           num_seeds,
                                           local_visited_hashmap_ptr,
-                                          hash_bitlen);                                         
+                                          hash_bitlen);
+
+  // device::compute_distance_to_random_nodes(result_indices_buffer,
+  //                                         result_distances_buffer,
+  //                                         *dataset_desc,
+  //                                         result_buffer_size,
+  //                                         num_distilation,
+  //                                         rand_xor_mask,
+  //                                         local_seed_ptr,
+  //                                         num_seeds,
+  //                                         local_visited_hashmap_ptr,
+  //                                         hash_bitlen);                                              
   __syncthreads();
   _CLK_REC(clk_compute_1st_distance);
 
@@ -720,7 +731,18 @@ __device__ void search_core(
       parent_list_buffer,
       result_indices_buffer,
       search_width);
-                                      
+    // device::compute_distance_to_child_nodes(
+    //   result_indices_buffer + internal_topk,
+    //   result_distances_buffer + internal_topk,
+    //   *dataset_desc,
+    //   knn_graph,
+    //   graph_degree,
+    //   local_visited_hashmap_ptr,
+    //   hash_bitlen,
+    //   parent_list_buffer,
+    //   result_indices_buffer,
+    //   search_width);
+                                           
     __syncthreads();
     _CLK_REC(clk_compute_distance);
 
@@ -784,6 +806,7 @@ __device__ void search_core(
 
     result_indices_ptr[j] =
       result_indices_buffer[ii] & ~index_msb_1_mask;  // clear most significant bit
+    result_indices_ptr[j] = index_map_ptr[result_indices_ptr[j]];
   }
   if (threadIdx.x == 0 && num_executed_iterations != nullptr) {
     num_executed_iterations[query_id] = iter + 1;
