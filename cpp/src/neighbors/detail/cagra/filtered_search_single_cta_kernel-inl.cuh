@@ -806,7 +806,7 @@ __device__ void search_core(
 
     result_indices_ptr[j] =
       result_indices_buffer[ii] & ~index_msb_1_mask;  // clear most significant bit
-    result_indices_ptr[j] = index_map_ptr[result_indices_ptr[j]];
+    result_indices_ptr[j] = index_map_ptr[result_indices_ptr[j]+label_offset];
   }
   if (threadIdx.x == 0 && num_executed_iterations != nullptr) {
     num_executed_iterations[query_id] = iter + 1;
