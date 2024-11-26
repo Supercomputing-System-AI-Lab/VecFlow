@@ -160,7 +160,8 @@ void time_it(std::string label, F f, Args &&...xs) {
 }
 void cagra_build_search_variants(raft::device_resources const& dev_resources,
                                raft::device_matrix_view<const float, int64_t> dataset,
-                               raft::device_matrix_view<const float, int64_t> queries) {
+                               raft::device_matrix_view<const float, int64_t> queries,
+                               int itopk_size = 32) {
 
   int64_t topk = 10;
   int64_t n_queries = queries.extent(0);
@@ -183,7 +184,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
 
   // Configure standard search parameters
   cagra::search_params search_params;
-  search_params.itopk_size = 512;  // Better recall
+  search_params.itopk_size = itopk_size;
   cagra::search_params filtered_search_params = search_params;
   filtered_search_params.algo = cagra::search_algo::SINGLE_CTA_FILTERED;
   // Configure persistent search parameters
@@ -249,8 +250,8 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
       uint32_t{0},
       uint32_t{label_number - 1}
   );
-  std::vector<uint32_t> h_labels(n_queries, 10);
-  // raft::copy(query_labels.data_handle(), h_labels.data(), n_queries, raft::resource::get_cuda_stream(dev_resources));
+  std::vector<uint32_t> h_labels(n_queries, 0);
+  raft::copy(query_labels.data_handle(), h_labels.data(), n_queries, raft::resource::get_cuda_stream(dev_resources));
   // 3. Batch filtered search
   time_it("filtered/batch", [&]() {
     cagra::filtered_search(dev_resources, 
@@ -266,43 +267,113 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
     raft::resource::sync_stream(dev_resources);
   });
   print_results(dev_resources, neighbors.view(), distances.view());
-  raft::copy(neighbors.data_handle(), h_neighbors.data(), n_queries * topk, raft::resource::get_cuda_stream(dev_resources));
-  raft::copy(distances.data_handle(), h_distances.data(), n_queries * topk, raft::resource::get_cuda_stream(dev_resources));
-
-  raft::resource::sync_stream(dev_resources);
+  // raft::copy(neighbors.data_handle(), h_neighbors.data(), n_queries * topk, raft::resource::get_cuda_stream(dev_resources));
+  // raft::copy(distances.data_handle(), h_distances.data(), n_queries * topk, raft::resource::get_cuda_stream(dev_resources));
   // 4. Async filtered search (one query per job)
-  time_it("filtered/async", [&]() {
-    constexpr int64_t kMaxJobs = 1000;
-    std::array<std::future<void>, kMaxJobs> futures;
+  // time_it("filtered/async", [&]() {
+  //   constexpr int64_t kMaxJobs = 1000;
+  //   std::array<std::future<void>, kMaxJobs> futures;
     
-    for (int64_t i = 0; i < n_queries + kMaxJobs; i++) {
-      if (i >= kMaxJobs) futures[i % kMaxJobs].wait();
-      if (i < n_queries) {
-        futures[i % kMaxJobs] = std::async(std::launch::async, [&, i]() {
-          auto query = raft::make_device_matrix_view<const float, int64_t>(
-            queries.data_handle() + i * queries.extent(1), 1, queries.extent(1));
-          auto neighbor = raft::make_device_matrix_view<uint32_t, int64_t>(
-            neighbors.data_handle() + i * topk, 1, topk);
-          auto distance = raft::make_device_matrix_view<float, int64_t>(
-            distances.data_handle() + i * topk, 1, topk);
-          auto query_label = raft::make_device_vector_view<uint32_t, int64_t>(
-            query_labels.data_handle() + i, 1);
+  //   for (int64_t i = 0; i < n_queries + kMaxJobs; i++) {
+  //     if (i >= kMaxJobs) futures[i % kMaxJobs].wait();
+  //     if (i < n_queries) {
+  //       futures[i % kMaxJobs] = std::async(std::launch::async, [&, i]() {
+  //         auto query = raft::make_device_matrix_view<const float, int64_t>(
+  //           queries.data_handle() + i * queries.extent(1), 1, queries.extent(1));
+  //         auto neighbor = raft::make_device_matrix_view<uint32_t, int64_t>(
+  //           neighbors.data_handle() + i * topk, 1, topk);
+  //         auto distance = raft::make_device_matrix_view<float, int64_t>(
+  //           distances.data_handle() + i * topk, 1, topk);
+  //         auto query_label = raft::make_device_vector_view<uint32_t, int64_t>(
+  //           query_labels.data_handle() + i, 1);
 
-          cagra::filtered_search(dev_resources,
-                               filtered_search_params_persistent,
-                               index,
-                               query,
-                               neighbor,
-                               distance,
-                               query_label,
-                               combined_indices.index_map.view(),
-                               combined_indices.label_size.view(),
-                               combined_indices.label_offset.view());
-        });
+  //         cagra::filtered_search(dev_resources,
+  //                              filtered_search_params_persistent,
+  //                              index,
+  //                              query,
+  //                              neighbor,
+  //                              distance,
+  //                              query_label,
+  //                              combined_indices.index_map.view(),
+  //                              combined_indices.label_size.view(),
+  //                              combined_indices.label_offset.view());
+  //       });
+  //     }
+  //   }
+  // });
+  // print_results(dev_resources, neighbors.view(), distances.view());
+
+  // Calculate recall@10
+  std::cout << "Calculating recall@10..." << std::endl;
+  auto neighbors_host =
+      raft::make_host_matrix<uint32_t, int64_t>(neighbors.extent(0), topk);
+  raft::copy(neighbors_host.data_handle(), neighbors.data_handle(), neighbors.size(), raft::resource::get_cuda_stream(dev_resources));
+  // Load ground truth files for each label
+  std::vector<std::vector<uint32_t>> ground_truths(label_number);
+  for (int i = 0; i < label_number; i++) {
+    std::string gt_file = "sift/sift_gt_" + std::to_string(i+1) + ".bin";
+    std::ifstream file(gt_file, std::ios::binary);
+    if (!file) {
+      std::cout << "File doesn't exist: " << gt_file << std::endl;
+      continue; // Skip if file doesn't exist
+    }
+    
+    // Read metadata first (n and k)
+    int32_t n, k;
+    file.read(reinterpret_cast<char*>(&n), sizeof(int32_t));
+    file.read(reinterpret_cast<char*>(&k), sizeof(int32_t));
+    
+    // Only store top-k results
+    ground_truths[i].resize(n * topk);
+    
+    // Read the full data but only keep first topk columns
+    std::vector<int32_t> temp_data((2 * n * k));
+    file.read(reinterpret_cast<char*>(temp_data.data()), temp_data.size() * sizeof(int32_t));
+    
+    // Copy only the first topk columns of IDs
+    for (int32_t row = 0; row < n; row++) {
+      for (int32_t col = 0; col < topk; col++) {
+        ground_truths[i][row * topk + col] = static_cast<uint32_t>(temp_data[row * k + col]);
       }
     }
-  });
-  print_results(dev_resources, neighbors.view(), distances.view());
+  }
+
+  // Calculate recall
+  int total_correct = 0;
+  int total_queries = 0;
+  
+  raft::copy(h_labels.data(), query_labels.data_handle(), n_queries, raft::resource::get_cuda_stream(dev_resources));
+  raft::resource::sync_stream(dev_resources);
+
+  for (int64_t i = 0; i < n_queries; i++) {
+    uint32_t label = h_labels[i];
+    if (label >= ground_truths.size() || ground_truths[label].empty()) {
+      continue; // Skip if no ground truth exists
+    }
+    
+    // Get top 10 results for this query
+    std::set<uint32_t> result_set;
+    for (int k = 0; k < topk; k++) {
+      result_set.insert(neighbors_host(i, k));
+    }
+    // Compare with ground truth
+    int correct = 0;
+    for (size_t j = 0; j < topk; j++) {
+      if (result_set.count(ground_truths[label][j + i * topk]) > 0) {
+        correct++;
+      }
+    }
+    
+    total_correct += correct;
+    total_queries++;
+  }
+
+  if (total_queries > 0) {
+    float recall = static_cast<float>(total_correct) / (total_queries * 10);
+    std::cout << "Recall@10: " << recall << std::endl;
+  } else {
+    std::cout << "No valid queries found for recall calculation" << std::endl;
+  }
 }
 
 auto load_fvecs(const std::string& file_path) -> std::pair<std::vector<float>, int64_t> {
@@ -334,7 +405,13 @@ auto load_fvecs(const std::string& file_path) -> std::pair<std::vector<float>, i
     return {data, dim};
 }
 
-int main() {
+int main(int argc, char** argv) {
+    // Parse command line argument
+    int itopk_size = 32;  // Default value
+    if (argc > 1) {
+        itopk_size = std::stoi(argv[1]);
+    }
+    
     raft::device_resources res;
 
     // Set pool memory resource with 1 GiB initial pool size
@@ -372,6 +449,8 @@ int main() {
                raft::resource::get_cuda_stream(res));
 
     // run the interesting part of the program
-    cagra_build_search_variants(res, raft::make_const_mdspan(dataset.view()),
-                              raft::make_const_mdspan(queries.view()));
+    cagra_build_search_variants(res, 
+                              raft::make_const_mdspan(dataset.view()),
+                              raft::make_const_mdspan(queries.view()),
+                              itopk_size);
 }
