@@ -46,19 +46,15 @@ auto load_and_combine_indices(raft::resources const& res, int label_number) -> C
     // First pass: calculate total size and get graph width
     int64_t total_rows = 0;
     int64_t graph_width = 0;
-    std::vector<int64_t> label_sizes;
     
     std::cout << "First pass: calculating sizes..." << std::endl;
     for (uint32_t i = 1; i <= label_number; i++) {
         std::string index_path = "indices/label_" + std::to_string(i) + "_index_32_16.bin";
-        
         cagra::index<float, uint32_t> temp_index(res);
         cagra::deserialize(res, index_path, &temp_index);
         int64_t n_rows = temp_index.graph().extent(0);
         total_rows += n_rows;
-        label_sizes.push_back(n_rows);
         graph_width = temp_index.graph().extent(1);
-        
     }
     
     std::cout << "Total rows: " << total_rows << ", Graph width: " << graph_width << std::endl;
@@ -87,9 +83,9 @@ auto load_and_combine_indices(raft::resources const& res, int label_number) -> C
 
         // Copy operations
         try {
-            raft::copy_async(final_matrix.data_handle() + current_offset * graph.extent(1),
+            raft::copy_async(final_matrix.data_handle() + current_offset * graph_width,
                            graph.data_handle(),
-                           n_rows * graph.extent(1),
+                           n_rows * graph_width,
                            raft::resource::get_cuda_stream(res));
             
             // Read indices from file into host memory
@@ -161,7 +157,8 @@ void time_it(std::string label, F f, Args &&...xs) {
 void cagra_build_search_variants(raft::device_resources const& dev_resources,
                                raft::device_matrix_view<const float, int64_t> dataset,
                                raft::device_matrix_view<const float, int64_t> queries,
-                               int itopk_size = 32) {
+                               int itopk_size = 32,
+                               int uniform_label = -1) {
 
   int64_t topk = 10;
   int64_t n_queries = queries.extent(0);
@@ -238,7 +235,10 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   // Load combined indices
   auto combined_indices = load_and_combine_indices(dev_resources, label_number);
   index.update_graph(dev_resources, raft::make_const_mdspan(combined_indices.final_matrix.view()));
-  
+  std::cout << "Filtered index has " << index.size() << " vectors" << std::endl;
+  std::cout << "Filtered graph has degree " << index.graph_degree() 
+            << ", graph size [" << index.graph().extent(0) << ", "
+            << index.graph().extent(1) << "]" << std::endl;
   raft::resource::sync_stream(dev_resources);
   auto query_labels = raft::make_device_vector<uint32_t>(dev_resources, n_queries);
   // Initialize query_labels with random integers between 0 and label_number-1
@@ -250,8 +250,10 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
       uint32_t{0},
       uint32_t{label_number - 1}
   );
-  std::vector<uint32_t> h_labels(n_queries, 0);
-  raft::copy(query_labels.data_handle(), h_labels.data(), n_queries, raft::resource::get_cuda_stream(dev_resources));
+  if (uniform_label != -1) {
+    std::vector<uint32_t> h_labels(n_queries, uniform_label);
+    raft::copy(query_labels.data_handle(), h_labels.data(), n_queries, raft::resource::get_cuda_stream(dev_resources));
+  }
   // 3. Batch filtered search
   time_it("filtered/batch", [&]() {
     cagra::filtered_search(dev_resources, 
@@ -341,17 +343,18 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   // Calculate recall
   int total_correct = 0;
   int total_queries = 0;
-  
-  raft::copy(h_labels.data(), query_labels.data_handle(), n_queries, raft::resource::get_cuda_stream(dev_resources));
+
+  std::vector<uint32_t> labels(n_queries, 0);
+  raft::copy(labels.data(), query_labels.data_handle(), n_queries, raft::resource::get_cuda_stream(dev_resources));
   raft::resource::sync_stream(dev_resources);
 
   for (int64_t i = 0; i < n_queries; i++) {
-    uint32_t label = h_labels[i];
+    uint32_t label = labels[i];
     if (label >= ground_truths.size() || ground_truths[label].empty()) {
       continue; // Skip if no ground truth exists
     }
     
-    // Get top 10 results for this query
+    // Get top k results for this query
     std::set<uint32_t> result_set;
     for (int k = 0; k < topk; k++) {
       result_set.insert(neighbors_host(i, k));
@@ -369,7 +372,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   }
 
   if (total_queries > 0) {
-    float recall = static_cast<float>(total_correct) / (total_queries * 10);
+    float recall = static_cast<float>(total_correct) / (total_queries * topk);
     std::cout << "Recall@10: " << recall << std::endl;
   } else {
     std::cout << "No valid queries found for recall calculation" << std::endl;
@@ -410,6 +413,10 @@ int main(int argc, char** argv) {
     int itopk_size = 32;  // Default value
     if (argc > 1) {
         itopk_size = std::stoi(argv[1]);
+    }
+    int uniform_label = -1;
+    if (argc > 2) {
+        uniform_label = std::stoi(argv[2]);
     }
     
     raft::device_resources res;
@@ -452,5 +459,6 @@ int main(int argc, char** argv) {
     cagra_build_search_variants(res, 
                               raft::make_const_mdspan(dataset.view()),
                               raft::make_const_mdspan(queries.view()),
-                              itopk_size);
+                              itopk_size, 
+                              uniform_label);
 }
