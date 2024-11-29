@@ -431,7 +431,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
     std::set<uint32_t> result_set;
     for (int k = 0; k < topk; k++) {
       if (i < 10) {
-        std::cout << "query_label = " << original_query_labels[query_map[i]] << std::endl;
+        std::cout << "query_label = " << original_query_labels[query_map[i]][0] << std::endl;
         std::cout << "neighbors_host(" << i << ", " << k << ") = " << neighbors_host(i, k) << std::endl;
         std::cout << "ground_truth[" << query_map[i] << " * " << topk << " + " << k << "] = " << ground_truth[query_map[i] * topk + k] << std::endl;
         std::cout << "ground_truth_distances[" << query_map[i] << " * " << topk << " + " << k << "] = " << ground_truth_distances[query_map[i] * topk + k] << std::endl;
