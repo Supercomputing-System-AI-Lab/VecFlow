@@ -215,6 +215,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   } else {
     std::cout << "Building index from scratch" << std::endl;
     index = cagra::build(dev_resources, index_params, dataset);
+    cagra::serialize(dev_resources, index_file, index);
   }
   std::cout << "CAGRA index has " << index.size() << " vectors" << std::endl;
   std::cout << "CAGRA graph has degree " << index.graph_degree() 
