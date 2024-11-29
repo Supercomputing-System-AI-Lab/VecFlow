@@ -281,13 +281,13 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   std::string valid_labels_path = "indices_yfcc/valid_labels.bin";
   std::ifstream valid_labels_file(valid_labels_path, std::ios::binary);
   // Read size first
-  int size;
-  valid_labels_file.read(reinterpret_cast<char*>(&size), sizeof(int));
+  uint32_t size;
+  valid_labels_file.read(reinterpret_cast<char*>(&size), sizeof(uint32_t));
   // Resize and read the actual data
-  std::vector<int> valid_labels(size);
-  valid_labels_file.read(reinterpret_cast<char*>(valid_labels.data()), size * sizeof(int));
+  std::vector<uint32_t> valid_labels(size);
+  valid_labels_file.read(reinterpret_cast<char*>(valid_labels.data()), size * sizeof(uint32_t));
   valid_labels_file.close();
-  std::unordered_map<int, int> label_map;
+  std::unordered_map<uint32_t, uint32_t> label_map;
   for (int i = 0; i < size; i++) {
     label_map[valid_labels[i]] = i;
   }
