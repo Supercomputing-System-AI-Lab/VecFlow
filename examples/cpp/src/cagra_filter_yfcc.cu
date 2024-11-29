@@ -206,9 +206,9 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   std::cout << "Building CAGRA index (search graph)" << std::endl;
   std::string index_file = "indices_yfcc/index_32_16.bin";
   std::ifstream test_file(index_file);
+  auto index = cagra::index<uint8_t, uint32_t>(dev_resources);
   if (test_file.good()) {  
     std::cout << "Loading index from file: " << index_file << std::endl;
-    auto index = cagra::index<uint8_t, uint32_t>(dev_resources);
     cagra::deserialize(dev_resources, index_file, &index);
     test_file.close();
   } else {
