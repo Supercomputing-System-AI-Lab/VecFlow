@@ -49,7 +49,7 @@ auto load_and_combine_indices(raft::resources const& res, int label_number) -> C
     
     std::cout << "First pass: calculating sizes..." << std::endl;
     for (uint32_t i = 1; i <= label_number; i++) {
-        std::string index_path = "indices/label_" + std::to_string(i) + "_index_32_16.bin";
+        std::string index_path = "indices/label_" + std::to_string(i) + "_index_16_8.bin";
         cagra::index<float, uint32_t> temp_index(res);
         cagra::deserialize(res, index_path, &temp_index);
         int64_t n_rows = temp_index.graph().extent(0);
@@ -75,7 +75,7 @@ auto load_and_combine_indices(raft::resources const& res, int label_number) -> C
         
         auto temp_index = cagra::index<float, uint32_t>(res);
         
-        std::string index_path = "indices/label_" + std::to_string(i) + "_index_32_16.bin";
+        std::string index_path = "indices/label_" + std::to_string(i) + "_index_16_8.bin";
         cagra::deserialize(res, index_path, &temp_index);
         
         auto graph = temp_index.graph();
@@ -169,8 +169,8 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
 
   // Build index
   cagra::index_params index_params;
-  index_params.intermediate_graph_degree = 32;
-  index_params.graph_degree = 16;
+  index_params.intermediate_graph_degree = 64;
+  index_params.graph_degree = 32;
   std::cout << "Building CAGRA index (search graph)" << std::endl;
   auto index = cagra::build(dev_resources, index_params, dataset);
 
@@ -194,6 +194,11 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   filtered_search_params_persistent.algo = cagra::search_algo::SINGLE_CTA_FILTERED;
 
   raft::resource::sync_stream(dev_resources);
+  // warmup
+  for (int i = 0; i < 5; i++) {
+    cagra::search(dev_resources, search_params, index, queries, neighbors.view(), distances.view());
+  }
+  raft::resource::sync_stream(dev_resources);
   // 1. Batch mode search
   time_it("standard/batch", [&]() {
     cagra::search(dev_resources, search_params, index, queries, neighbors.view(), distances.view());
@@ -203,10 +208,62 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   // Reset arrays
   std::vector<uint32_t> h_neighbors(n_queries * topk, 0);
   std::vector<float> h_distances(n_queries * topk, 0);
-  raft::copy(neighbors.data_handle(), h_neighbors.data(), n_queries * topk, raft::resource::get_cuda_stream(dev_resources));
-  raft::copy(distances.data_handle(), h_distances.data(), n_queries * topk, raft::resource::get_cuda_stream(dev_resources));
+  // raft::copy(neighbors.data_handle(), h_neighbors.data(), n_queries * topk, raft::resource::get_cuda_stream(dev_resources));
+  // raft::copy(distances.data_handle(), h_distances.data(), n_queries * topk, raft::resource::get_cuda_stream(dev_resources));
   
   raft::resource::sync_stream(dev_resources);
+  std::cout << "Calculating recall@10..." << std::endl;
+  auto neighbors_host =
+      raft::make_host_matrix<uint32_t, int64_t>(neighbors.extent(0), topk);
+  raft::copy(neighbors_host.data_handle(), neighbors.data_handle(), neighbors.size(), raft::resource::get_cuda_stream(dev_resources));
+  raft::resource::sync_stream(dev_resources);
+  // Load ground truth data
+  std::ifstream file("sift/sift_groundtruth.ivecs", std::ios::binary);
+  if (!file) {
+    throw std::runtime_error("Cannot open ground truth file");
+  }
+
+  // Read ground truth data
+  int32_t k;
+  file.read(reinterpret_cast<char*>(&k), sizeof(int32_t));
+  
+  std::vector<uint32_t> ground_truth(n_queries * topk);
+  std::vector<int32_t> temp_data(n_queries * (k+1));
+  
+  // Read the full data but only keep first topk columns
+  file.read(reinterpret_cast<char*>(temp_data.data()), temp_data.size() * sizeof(int32_t));
+  
+  // Copy only the first topk columns
+  for (int32_t row = 0; row < n_queries; row++) {
+    for (int32_t col = 0; col < topk; col++) {
+      ground_truth[row * topk + col] = static_cast<uint32_t>(temp_data[row * (k+1) + col + 1]);
+    }
+  }
+
+  // Calculate recall
+  int total_correct = 0;
+  
+  for (int64_t i = 0; i < n_queries; i++) {
+    // Get top k results for this query
+    std::set<uint32_t> result_set;
+    for (int k = 0; k < topk; k++) {
+      result_set.insert(neighbors_host(i, k));
+
+    }
+    
+    // Compare with ground truth
+    int correct = 0;
+    for (size_t j = 0; j < topk; j++) {
+      if (result_set.count(ground_truth[i * topk + j]) > 0) {
+        correct++;
+      }
+    }
+    total_correct += correct;
+  }
+
+  float recall = static_cast<float>(total_correct) / (n_queries * topk);
+  std::cout << "Recall@10: " << recall << std::endl;
+
   // 2. Async persistent search (one query per job)
   time_it("persistent/async", [&]() {
     constexpr int64_t kMaxJobs = 1000;
@@ -307,7 +364,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
 
   // Calculate recall@10
   std::cout << "Calculating recall@10..." << std::endl;
-  auto neighbors_host =
+  neighbors_host =
       raft::make_host_matrix<uint32_t, int64_t>(neighbors.extent(0), topk);
   raft::copy(neighbors_host.data_handle(), neighbors.data_handle(), neighbors.size(), raft::resource::get_cuda_stream(dev_resources));
   // Load ground truth files for each label
@@ -341,7 +398,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   }
 
   // Calculate recall
-  int total_correct = 0;
+  total_correct = 0;
   int total_queries = 0;
 
   std::vector<uint32_t> labels(n_queries, 0);
