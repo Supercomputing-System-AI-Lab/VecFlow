@@ -289,18 +289,16 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
             << ", graph size [" << index.graph().extent(0) << ", "
             << index.graph().extent(1) << "]" << std::endl;
   raft::resource::sync_stream(dev_resources);
-  std::cout << "Reading query labels..." << std::endl;
   auto original_query_labels = read_query_labels(dev_resources);
-  std::cout << "Query labels read" << std::endl;
+  std::vector<int64_t> query_map(n_queries);
   // Count queries with exactly one label and in valid_labels
-  std::cout << "Counting queries with exactly one label and in valid_labels..." << std::endl;
   std::vector<int64_t> valid_query_indices;
   for (int64_t i = 0; i < n_queries; i++) {
     if (original_query_labels[i].size() == 1 && label_map.find(original_query_labels[i][0]) != label_map.end()) {
       valid_query_indices.push_back(i);
+      query_map[valid_query_indices.size() - 1] = i;
     }
   }
-  std::cout << "Counted " << valid_query_indices.size() << " queries with exactly one label and in valid_labels" << std::endl;
   n_queries = valid_query_indices.size();
   // Create new filtered queries matrix
   auto filtered_queries = raft::make_device_matrix<uint8_t, int64_t>(dev_resources, n_queries, queries.extent(1));
@@ -312,7 +310,6 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
                     queries.extent(1),
                     raft::resource::get_cuda_stream(dev_resources));
   }
-  std::cout << "Copied valid queries to new matrix" << std::endl;
   // Create filtered query labels vector
   auto filtered_query_labels = raft::make_device_vector<uint32_t, int64_t>(dev_resources, n_queries);
   std::vector<uint32_t> h_filtered_labels(n_queries);
@@ -321,13 +318,11 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   for (int64_t i = 0; i < n_queries; i++) {
     h_filtered_labels[i] = label_map[original_query_labels[valid_query_indices[i]][0]];
   }
-  std::cout << "Mapped original labels to new indices" << std::endl;
   // Copy mapped labels to device
   raft::update_device(filtered_query_labels.data_handle(),
                      h_filtered_labels.data(),
                      n_queries,
                      raft::resource::get_cuda_stream(dev_resources));
-  std::cout << "Copied mapped labels to device" << std::endl;
   // delete original queries and query_labels
 
   // Resize result arrays for filtered queries
@@ -385,77 +380,59 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   // print_results(dev_resources, neighbors.view(), distances.view());
 
   // Calculate recall@10
-  std::cout << "Calculating recall@10..." << std::endl;
+  std::cout << "Calculating recall@10" << std::endl;
   auto neighbors_host =
       raft::make_host_matrix<uint32_t, int64_t>(neighbors.extent(0), topk);
   raft::copy(neighbors_host.data_handle(), neighbors.data_handle(), neighbors.size(), raft::resource::get_cuda_stream(dev_resources));
-  // Load ground truth files for each label
-  std::vector<std::vector<uint32_t>> ground_truths(label_number);
-  for (int i = 0; i < label_number; i++) {
-    std::string gt_file = "sift/sift_gt_" + std::to_string(i+1) + ".bin";
-    std::ifstream file(gt_file, std::ios::binary);
-    if (!file) {
-      std::cout << "File doesn't exist: " << gt_file << std::endl;
-      continue; // Skip if file doesn't exist
-    }
-    
-    // Read metadata first (n and k)
-    int32_t n, k;
-    file.read(reinterpret_cast<char*>(&n), sizeof(int32_t));
-    file.read(reinterpret_cast<char*>(&k), sizeof(int32_t));
-    
-    // Only store top-k results
-    ground_truths[i].resize(n * topk);
-    
-    // Read the full data but only keep first topk columns
-    std::vector<int32_t> temp_data((2 * n * k));
-    file.read(reinterpret_cast<char*>(temp_data.data()), temp_data.size() * sizeof(int32_t));
-    
-    // Copy only the first topk columns of IDs
-    for (int32_t row = 0; row < n; row++) {
-      for (int32_t col = 0; col < topk; col++) {
-        ground_truths[i][row * topk + col] = static_cast<uint32_t>(temp_data[row * k + col]);
-      }
+  raft::resource::sync_stream(dev_resources);
+  // Load ground truth data
+  std::ifstream file("yfcc100M/GT.private.2727415019.ibin", std::ios::binary);
+  if (!file) {
+    throw std::runtime_error("Cannot open ground truth file");
+  }
+
+  // Read ground truth data
+  uint32_t n, k;
+  file.read(reinterpret_cast<char*>(&n), sizeof(uint32_t));
+  file.read(reinterpret_cast<char*>(&k), sizeof(uint32_t));
+  
+  std::vector<uint32_t> ground_truth(n * topk);
+  std::vector<int32_t> temp_data(n * k);
+  
+  // Read the full data but only keep first topk columns
+  file.read(reinterpret_cast<char*>(temp_data.data()), temp_data.size() * sizeof(int32_t));
+  
+  // Copy only the first topk columns
+  for (int32_t row = 0; row < n; row++) {
+    for (int32_t col = 0; col < topk; col++) {
+      ground_truth[row * topk + col] = static_cast<uint32_t>(temp_data[row * k + col]);
     }
   }
 
   // Calculate recall
   int total_correct = 0;
-  int total_queries = 0;
-
-  std::vector<uint32_t> labels(n_queries, 0);
-  raft::copy(labels.data(), filtered_query_labels.data_handle(), n_queries, raft::resource::get_cuda_stream(dev_resources));
-  raft::resource::sync_stream(dev_resources);
-
+  
   for (int64_t i = 0; i < n_queries; i++) {
-    uint32_t label = labels[i];
-    if (label >= ground_truths.size() || ground_truths[label].empty()) {
-      continue; // Skip if no ground truth exists
-    }
-    
     // Get top k results for this query
     std::set<uint32_t> result_set;
     for (int k = 0; k < topk; k++) {
       result_set.insert(neighbors_host(i, k));
+
     }
+    
     // Compare with ground truth
     int correct = 0;
     for (size_t j = 0; j < topk; j++) {
-      if (result_set.count(ground_truths[label][j + i * topk]) > 0) {
+      if (result_set.count(ground_truth[query_map[i] * topk + j]) > 0) {
         correct++;
       }
     }
-    
     total_correct += correct;
-    total_queries++;
   }
 
-  if (total_queries > 0) {
-    float recall = static_cast<float>(total_correct) / (total_queries * topk);
-    std::cout << "Recall@10: " << recall << std::endl;
-  } else {
-    std::cout << "No valid queries found for recall calculation" << std::endl;
-  }
+  float recall = static_cast<float>(total_correct) / (n_queries * topk);
+  std::cout << "Recall@10: " << recall << std::endl;
+
 }
 
 auto load_data_bin(const std::string& file_path) -> std::tuple<std::vector<uint8_t>, int64_t, int64_t> {
