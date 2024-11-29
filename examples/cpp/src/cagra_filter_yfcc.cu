@@ -210,6 +210,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   if (test_file.good()) {  
     std::cout << "Loading index from file: " << index_file << std::endl;
     cagra::deserialize(dev_resources, index_file, &index);
+    index.update_dataset(dev_resources, raft::make_const_mdspan(dataset));
     test_file.close();
   } else {
     std::cout << "Building index from scratch" << std::endl;
