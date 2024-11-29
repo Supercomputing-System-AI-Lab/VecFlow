@@ -397,18 +397,22 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   file.read(reinterpret_cast<char*>(&k), sizeof(uint32_t));
   
   std::vector<uint32_t> ground_truth(n * topk);
-  std::vector<int32_t> temp_data(n * k);
+  std::vector<uint32_t> ground_truth_distances(n * topk);
+  std::vector<int32_t> temp_indices(n * k);
+  std::vector<float> temp_distances(n * k);
   
   // Read the full data but only keep first topk columns
-  file.read(reinterpret_cast<char*>(temp_data.data()), temp_data.size() * sizeof(int32_t));
+  file.read(reinterpret_cast<char*>(temp_indices.data()), temp_indices.size() * sizeof(int32_t));
+  file.read(reinterpret_cast<char*>(temp_distances.data()), temp_distances.size() * sizeof(float));
   
   // Copy only the first topk columns
   for (int32_t row = 0; row < n; row++) {
     for (int32_t col = 0; col < topk; col++) {
-      ground_truth[row * topk + col] = static_cast<uint32_t>(temp_data[row * k + col]);
+      ground_truth[row * topk + col] = static_cast<uint32_t>(temp_indices[row * k + col]);
+      ground_truth_distances[row * topk + col] = temp_distances[row * k + col];
     }
   }
-
+  
   // Calculate recall
   int total_correct = 0;
   
@@ -416,6 +420,9 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
     // Get top k results for this query
     std::set<uint32_t> result_set;
     for (int k = 0; k < topk; k++) {
+      std::cout << "neighbors_host(" << i << ", " << k << ") = " << neighbors_host(i, k) << std::endl;
+      std::cout << "ground_truth[" << query_map[i] << " * " << topk << " + " << k << "] = " << ground_truth[query_map[i] * topk + k] << std::endl;
+      std::cout << "ground_truth_distances[" << query_map[i] << " * " << topk << " + " << k << "] = " << ground_truth_distances[query_map[i] * topk + k] << std::endl;
       result_set.insert(neighbors_host(i, k));
 
     }
