@@ -312,6 +312,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
     }
   }
   n_queries = valid_query_indices.size();
+  std::cout << "Number of valid queries: " << n_queries << std::endl;
   // Create new filtered queries matrix
   auto filtered_queries = raft::make_device_matrix<uint8_t, int64_t>(dev_resources, n_queries, queries.extent(1));
   
