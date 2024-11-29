@@ -293,12 +293,14 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   auto original_query_labels = read_query_labels(dev_resources);
   std::cout << "Query labels read" << std::endl;
   // Count queries with exactly one label and in valid_labels
+  std::cout << "Counting queries with exactly one label and in valid_labels..." << std::endl;
   std::vector<int64_t> valid_query_indices;
   for (int64_t i = 0; i < n_queries; i++) {
     if (original_query_labels[i].size() == 1 && label_map.find(original_query_labels[i][0]) != label_map.end()) {
       valid_query_indices.push_back(i);
     }
   }
+  std::cout << "Counted " << valid_query_indices.size() << " queries with exactly one label and in valid_labels" << std::endl;
   n_queries = valid_query_indices.size();
   // Create new filtered queries matrix
   auto filtered_queries = raft::make_device_matrix<float, int64_t>(dev_resources, n_queries, queries.extent(1));
@@ -310,7 +312,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
                     queries.extent(1),
                     raft::resource::get_cuda_stream(dev_resources));
   }
-  
+  std::cout << "Copied valid queries to new matrix" << std::endl;
   // Create filtered query labels vector
   auto filtered_query_labels = raft::make_device_vector<uint32_t, int64_t>(dev_resources, n_queries);
   std::vector<uint32_t> h_filtered_labels(n_queries);
@@ -319,13 +321,13 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   for (int64_t i = 0; i < n_queries; i++) {
     h_filtered_labels[i] = label_map[original_query_labels[valid_query_indices[i]][0]];
   }
-  
+  std::cout << "Mapped original labels to new indices" << std::endl;
   // Copy mapped labels to device
   raft::update_device(filtered_query_labels.data_handle(),
                      h_filtered_labels.data(),
                      n_queries,
                      raft::resource::get_cuda_stream(dev_resources));
-  
+  std::cout << "Copied mapped labels to device" << std::endl;
   // delete original queries and query_labels
 
   // Resize result arrays for filtered queries
