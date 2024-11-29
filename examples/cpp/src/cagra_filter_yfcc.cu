@@ -203,8 +203,15 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   index_params.intermediate_graph_degree = 32;
   index_params.graph_degree = 16;
   std::cout << "Building CAGRA index (search graph)" << std::endl;
-  auto index = cagra::build(dev_resources, index_params, dataset);
-
+  std::string index_file = "indices_yfcc/index_32_16.bin";
+  if (std::filesystem::exists(index_file)) {  
+    std::cout << "Loading index from file: " << index_file << std::endl;
+    auto index = cagra::index<uint8_t, uint32_t>(dev_resources);
+    cagra::deserialize(dev_resources, index_file, &index);
+  } else {
+    std::cout << "Building index from scratch" << std::endl;
+    index = cagra::build(dev_resources, index_params, dataset);
+  }
   std::cout << "CAGRA index has " << index.size() << " vectors" << std::endl;
   std::cout << "CAGRA graph has degree " << index.graph_degree() 
             << ", graph size [" << index.graph().extent(0) << ", "
@@ -421,6 +428,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
     std::set<uint32_t> result_set;
     for (int k = 0; k < topk; k++) {
       if (i < 10) {
+        std::cout << "query_label = " << original_query_labels[query_map[i]] << std::endl;
         std::cout << "neighbors_host(" << i << ", " << k << ") = " << neighbors_host(i, k) << std::endl;
         std::cout << "ground_truth[" << query_map[i] << " * " << topk << " + " << k << "] = " << ground_truth[query_map[i] * topk + k] << std::endl;
         std::cout << "ground_truth_distances[" << query_map[i] << " * " << topk << " + " << k << "] = " << ground_truth_distances[query_map[i] * topk + k] << std::endl;
