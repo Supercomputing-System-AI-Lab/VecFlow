@@ -50,7 +50,7 @@ auto load_and_combine_indices(raft::resources const& res, int label_number) -> C
     std::cout << "First pass: calculating sizes..." << std::endl;
     for (uint32_t i = 1; i <= label_number; i++) {
         std::string index_path = "indices_yfcc/label_" + std::to_string(i) + "_index_32_16.bin";
-        cagra::index<float, uint32_t> temp_index(res);
+        cagra::index<uint8_t, uint32_t> temp_index(res);
         cagra::deserialize(res, index_path, &temp_index);
         int64_t n_rows = temp_index.graph().extent(0);
         total_rows += n_rows;
@@ -73,7 +73,7 @@ auto load_and_combine_indices(raft::resources const& res, int label_number) -> C
 
     for (uint32_t i = 1; i <= label_number; i++) {
         
-        auto temp_index = cagra::index<float, uint32_t>(res);
+        auto temp_index = cagra::index<uint8_t, uint32_t>(res);
         
         std::string index_path = "indices_yfcc/label_" + std::to_string(i) + "_index_32_16.bin";
         cagra::deserialize(res, index_path, &temp_index);
@@ -186,8 +186,8 @@ auto read_query_labels(raft::device_resources const& dev_resources) -> std::vect
 }
 
 void cagra_build_search_variants(raft::device_resources const& dev_resources,
-                               raft::device_matrix_view<const float, int64_t> dataset,
-                               raft::device_matrix_view<const float, int64_t> queries,
+                               raft::device_matrix_view<const uint8_t, int64_t> dataset,
+                               raft::device_matrix_view<const uint8_t, int64_t> queries,
                                int itopk_size = 32,
                                int uniform_label = -1) {
 
@@ -252,7 +252,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
       if (i >= kMaxJobs) futures[i % kMaxJobs].wait();
       if (i < n_queries) {
         futures[i % kMaxJobs] = std::async(std::launch::async, [&, i]() {
-          auto query = raft::make_device_matrix_view<const float, int64_t>(
+          auto query = raft::make_device_matrix_view<const uint8_t, int64_t>(
             queries.data_handle() + i * queries.extent(1), 1, queries.extent(1));
           auto neighbor = raft::make_device_matrix_view<uint32_t, int64_t>(
             neighbors.data_handle() + i * topk, 1, topk);
@@ -303,7 +303,7 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   std::cout << "Counted " << valid_query_indices.size() << " queries with exactly one label and in valid_labels" << std::endl;
   n_queries = valid_query_indices.size();
   // Create new filtered queries matrix
-  auto filtered_queries = raft::make_device_matrix<float, int64_t>(dev_resources, n_queries, queries.extent(1));
+  auto filtered_queries = raft::make_device_matrix<uint8_t, int64_t>(dev_resources, n_queries, queries.extent(1));
   
   // Copy valid queries to new matrix
   for (int64_t i = 0; i < n_queries; i++) {
@@ -458,18 +458,18 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   }
 }
 
-auto load_data_bin(const std::string& file_path) -> std::tuple<std::vector<float>, int64_t, int64_t> {
+auto load_data_bin(const std::string& file_path) -> std::tuple<std::vector<uint8_t>, int64_t, int64_t> {
     std::ifstream file(file_path, std::ios::binary);
     if (!file) {
         throw std::runtime_error("Cannot open file: " + file_path);
     }
-    int32_t N, dim;
-    file.read(reinterpret_cast<char*>(&N), sizeof(int32_t));
-    file.read(reinterpret_cast<char*>(&dim), sizeof(int32_t));
+    uint32_t N, dim;
+    file.read(reinterpret_cast<char*>(&N), sizeof(uint32_t));
+    file.read(reinterpret_cast<char*>(&dim), sizeof(uint32_t));
     
-    std::vector<float> data(N * dim);
-    for (int64_t i = 0; i < N; i++) {
-        file.read(reinterpret_cast<char*>(data.data() + i * dim), dim * sizeof(float));
+    std::vector<uint8_t> data(N * dim);
+    for (uint32_t i = 0; i < N; i++) {
+        file.read(reinterpret_cast<char*>(data.data() + i * dim), dim * sizeof(uint8_t));
     }
     
     return {data, N, dim};
@@ -511,8 +511,8 @@ int main(int argc, char** argv) {
               << base_dim << " dimensions" << std::endl;
 
     // Create and populate GPU matrices
-    auto dataset = raft::make_device_matrix<float, int64_t>(res, n_samples, base_dim);
-    auto queries = raft::make_device_matrix<float, int64_t>(res, n_queries, query_dim);
+    auto dataset = raft::make_device_matrix<uint8_t, int64_t>(res, n_samples, base_dim);
+    auto queries = raft::make_device_matrix<uint8_t, int64_t>(res, n_queries, query_dim);
     
     // Copy datasets to GPU
     raft::copy(dataset.data_handle(), yfcc_base_data.data(), n_samples * base_dim, 

@@ -201,8 +201,11 @@ if(BUILD_SHARED_LIBS)
     src/neighbors/cagra_search_float.cu
     src/neighbors/cagra_filtered_search_float.cu
     src/neighbors/cagra_search_half.cu
+    src/neighbors/cagra_filtered_search_half.cu
     src/neighbors/cagra_search_int8.cu
+    src/neighbors/cagra_filtered_search_int8.cu
     src/neighbors/cagra_search_uint8.cu
+    src/neighbors/cagra_filtered_search_uint8.cu
     src/neighbors/detail/cagra/compute_distance.cu
     src/neighbors/detail/cagra/compute_distance_standard_InnerProduct_float_uint32_dim128_t8.cu
     src/neighbors/detail/cagra/compute_distance_standard_InnerProduct_float_uint32_dim256_t16.cu
