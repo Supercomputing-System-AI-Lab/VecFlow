@@ -26,6 +26,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <future>
 #include <fstream>
 #include <vector>
@@ -204,10 +205,12 @@ void cagra_build_search_variants(raft::device_resources const& dev_resources,
   index_params.graph_degree = 16;
   std::cout << "Building CAGRA index (search graph)" << std::endl;
   std::string index_file = "indices_yfcc/index_32_16.bin";
-  if (std::filesystem::exists(index_file)) {  
+  std::ifstream test_file(index_file);
+  if (test_file.good()) {  
     std::cout << "Loading index from file: " << index_file << std::endl;
     auto index = cagra::index<uint8_t, uint32_t>(dev_resources);
     cagra::deserialize(dev_resources, index_file, &index);
+    test_file.close();
   } else {
     std::cout << "Building index from scratch" << std::endl;
     index = cagra::build(dev_resources, index_params, dataset);
