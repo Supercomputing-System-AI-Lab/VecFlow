@@ -199,9 +199,13 @@ if(BUILD_SHARED_LIBS)
   add_library(
     cuvs-cagra-search STATIC
     src/neighbors/cagra_search_float.cu
+    src/neighbors/cagra_filtered_search_float.cu
     src/neighbors/cagra_search_half.cu
+    src/neighbors/cagra_filtered_search_half.cu
     src/neighbors/cagra_search_int8.cu
+    src/neighbors/cagra_filtered_search_int8.cu
     src/neighbors/cagra_search_uint8.cu
+    src/neighbors/cagra_filtered_search_uint8.cu
     src/neighbors/detail/cagra/compute_distance.cu
     src/neighbors/detail/cagra/compute_distance_standard_InnerProduct_float_uint32_dim128_t8.cu
     src/neighbors/detail/cagra/compute_distance_standard_InnerProduct_float_uint32_dim256_t16.cu
@@ -259,6 +263,10 @@ if(BUILD_SHARED_LIBS)
     src/neighbors/detail/cagra/search_single_cta_half_uint32.cu
     src/neighbors/detail/cagra/search_single_cta_int8_uint32.cu
     src/neighbors/detail/cagra/search_single_cta_uint8_uint32.cu
+    src/neighbors/detail/cagra/filtered_search_single_cta_float_uint32.cu
+    src/neighbors/detail/cagra/filtered_search_single_cta_half_uint32.cu
+    src/neighbors/detail/cagra/filtered_search_single_cta_int8_uint32.cu
+    src/neighbors/detail/cagra/filtered_search_single_cta_uint8_uint32.cu
   )
 
   file(GLOB_RECURSE compute_distance_sources "src/neighbors/detail/cagra/compute_distance_*.cu")

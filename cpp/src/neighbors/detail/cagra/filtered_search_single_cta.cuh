@@ -19,23 +19,19 @@
 #include "compute_distance-ext.cuh"
 #include "device_common.hpp"
 #include "hashmap.hpp"
-#include "search_multi_cta_kernel.cuh"
 #include "search_plan.cuh"
-#include "topk_for_cagra/topk.h"  // TODO replace with raft topk if possible
+#include "filtered_search_single_cta_kernel.cuh"
+#include "topk_by_radix.cuh"
+#include "topk_for_cagra/topk.h"  // TODO replace with raft topk
 #include "utils.hpp"
 
-#include <raft/core/detail/macros.hpp>
 #include <raft/core/device_mdspan.hpp>
 #include <raft/core/logger-ext.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
 #include <raft/core/resource/device_properties.hpp>
 #include <raft/core/resources.hpp>
 
-#include <cuvs/distance/distance.hpp>
-
-#include <raft/linalg/map.cuh>
-
-// TODO: This shouldn't be invoking anything in spatial/knn
+// TODO: This shouldn't be invoking anything from spatial/knn
 #include "../ann_utils.cuh"
 
 #include <raft/util/cuda_rt_essentials.hpp>
@@ -49,13 +45,13 @@
 #include <vector>
 
 namespace cuvs::neighbors::cagra::detail {
-namespace multi_cta_search {
+namespace filtered_single_cta_search {
 
 template <typename DataT, typename IndexT, typename DistanceT, typename SAMPLE_FILTER_T>
-struct search : public search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
+struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
   using base_type  = search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T>;
   using DATA_T     = typename base_type::DATA_T;
-  using INDEX_T    = typename base_type ::INDEX_T;
+  using INDEX_T    = typename base_type::INDEX_T;
   using DISTANCE_T = typename base_type::DISTANCE_T;
 
   using base_type::algo;
@@ -92,11 +88,7 @@ struct search : public search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_
   using base_type::num_executed_iterations;
   using base_type::num_seeds;
 
-  uint32_t num_cta_per_query;
-  lightweight_uvector<INDEX_T> intermediate_indices;
-  lightweight_uvector<float> intermediate_distances;
-  size_t topk_workspace_size;
-  lightweight_uvector<uint32_t> topk_workspace;
+  uint32_t num_itopk_candidates;
 
   search(raft::resources const& res,
          search_params params,
@@ -104,41 +96,64 @@ struct search : public search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_
          int64_t dim,
          int64_t graph_degree,
          uint32_t topk)
-    : base_type(res, params, dataset_desc, dim, graph_degree, topk),
-      intermediate_indices(res),
-      intermediate_distances(res),
-      topk_workspace(res)
-
+    : base_type(res, params, dataset_desc, dim, graph_degree, topk)
   {
-    set_params(res, params);
+    set_params(res);
   }
 
-  void set_params(raft::resources const& res, const search_params& params)
+  ~search() {}
+
+  inline void set_params(raft::resources const& res)
   {
-    constexpr unsigned muti_cta_itopk_size = 32;
-    this->itopk_size                       = muti_cta_itopk_size;
-    search_width                           = 1;
-    num_cta_per_query =
-      max(params.search_width, raft::ceildiv(params.itopk_size, (size_t)muti_cta_itopk_size));
-    result_buffer_size = itopk_size + search_width * graph_degree;
+    num_itopk_candidates = search_width * graph_degree;
+    result_buffer_size   = itopk_size + num_itopk_candidates;
+
     typedef raft::Pow2<32> AlignBytes;
     unsigned result_buffer_size_32 = AlignBytes::roundUp(result_buffer_size);
-    // constexpr unsigned max_result_buffer_size = 256;
-    RAFT_EXPECTS(result_buffer_size_32 <= 256, "Result buffer size cannot exceed 256");
 
-    smem_size = dataset_desc.smem_ws_size_in_bytes +
-                (sizeof(INDEX_T) + sizeof(DISTANCE_T)) * result_buffer_size_32 +
-                sizeof(uint32_t) * search_width + sizeof(uint32_t);
-    RAFT_LOG_DEBUG("# smem_size: %u", smem_size);
+    constexpr unsigned max_itopk = 512;
+    RAFT_EXPECTS(itopk_size <= max_itopk, "itopk_size cannot be larger than %u", max_itopk);
 
+    RAFT_LOG_DEBUG("# num_itopk_candidates: %u", num_itopk_candidates);
+    RAFT_LOG_DEBUG("# num_itopk: %lu", itopk_size);
     //
     // Determine the thread block size
     //
-    constexpr unsigned min_block_size = 64;
-    constexpr unsigned max_block_size = 1024;
-    uint32_t block_size               = thread_block_size;
+    constexpr unsigned min_block_size       = 64;  // 32 or 64
+    constexpr unsigned min_block_size_radix = 256;
+    constexpr unsigned max_block_size       = 1024;
+    //
+    const std::uint32_t topk_ws_size = 3;
+    const std::uint32_t base_smem_size =
+      dataset_desc.smem_ws_size_in_bytes +
+      (sizeof(INDEX_T) + sizeof(DISTANCE_T)) * result_buffer_size_32 +
+      sizeof(INDEX_T) * hashmap::get_size(small_hash_bitlen) + sizeof(INDEX_T) * search_width +
+      sizeof(std::uint32_t) * topk_ws_size + sizeof(std::uint32_t);
+    smem_size = base_smem_size;
+    if (num_itopk_candidates > 256) {
+      // Tentatively calculate the required share memory size when radix
+      // sort based topk is used, assuming the block size is the maximum.
+      if (itopk_size <= 256) {
+        smem_size += topk_by_radix_sort<256, INDEX_T>::smem_size * sizeof(std::uint32_t);
+      } else {
+        smem_size += topk_by_radix_sort<512, INDEX_T>::smem_size * sizeof(std::uint32_t);
+      }
+    }
+
+    uint32_t block_size = thread_block_size;
     if (block_size == 0) {
       block_size = min_block_size;
+
+      if (num_itopk_candidates > 256) {
+        // radix-based topk is used.
+        block_size = min_block_size_radix;
+
+        // Internal topk values per thread must be equlal to or less than 4
+        // when radix-sort block_topk is used.
+        while ((block_size < max_block_size) && (max_itopk / block_size > 4)) {
+          block_size *= 2;
+        }
+      }
 
       // Increase block size according to shared memory requirements.
       // If block size is 32, upper limit of shared memory size per
@@ -148,14 +163,13 @@ struct search : public search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_
         block_size *= 2;
       }
 
-      // Increase block size to improve GPU occupancy when total number of
-      // CTAs (= num_cta_per_query * max_queries) is small.
+      // Increase block size to improve GPU occupancy when batch size
+      // is small, that is, number of queries is low.
       cudaDeviceProp deviceProp = raft::resource::get_device_properties(res);
       RAFT_LOG_DEBUG("# multiProcessorCount: %d", deviceProp.multiProcessorCount);
       while ((block_size < max_block_size) &&
              (graph_degree * search_width * team_size >= block_size * 2) &&
-             (num_cta_per_query * max_queries <=
-              (1024 / (block_size * 2)) * deviceProp.multiProcessorCount)) {
+             (max_queries <= (1024 / (block_size * 2)) * deviceProp.multiProcessorCount)) {
         block_size *= 2;
       }
     }
@@ -168,87 +182,70 @@ struct search : public search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_
                  max_block_size);
     thread_block_size = block_size;
 
-    //
-    // Allocate memory for intermediate buffer and workspace.
-    //
-    uint32_t num_intermediate_results = num_cta_per_query * itopk_size;
-    intermediate_indices.resize(num_intermediate_results * max_queries,
-                                raft::resource::get_cuda_stream(res));
-    intermediate_distances.resize(num_intermediate_results * max_queries,
-                                  raft::resource::get_cuda_stream(res));
-
-    hashmap.resize(hashmap_size, raft::resource::get_cuda_stream(res));
-
-    topk_workspace_size = _cuann_find_topk_bufferSize(
-      topk, max_queries, num_intermediate_results, utils::get_cuda_data_type<DATA_T>());
-    RAFT_LOG_DEBUG("# topk_workspace_size: %lu", topk_workspace_size);
-    topk_workspace.resize(topk_workspace_size, raft::resource::get_cuda_stream(res));
+    if (num_itopk_candidates <= 256) {
+      RAFT_LOG_DEBUG("# bitonic-sort based topk routine is used");
+    } else {
+      RAFT_LOG_DEBUG("# radix-sort based topk routine is used");
+      smem_size = base_smem_size;
+      if (itopk_size <= 256) {
+        constexpr unsigned MAX_ITOPK = 256;
+        smem_size += topk_by_radix_sort<MAX_ITOPK, INDEX_T>::smem_size * sizeof(std::uint32_t);
+      } else {
+        constexpr unsigned MAX_ITOPK = 512;
+        smem_size += topk_by_radix_sort<MAX_ITOPK, INDEX_T>::smem_size * sizeof(std::uint32_t);
+      }
+    }
+    RAFT_LOG_DEBUG("# smem_size: %u", smem_size);
+    hashmap_size = 0;
+    if (small_hash_bitlen == 0 && !this->persistent) {
+      hashmap_size = max_queries * hashmap::get_size(hash_bitlen);
+      hashmap.resize(hashmap_size, raft::resource::get_cuda_stream(res));
+    }
+    RAFT_LOG_DEBUG("# hashmap_size: %lu", hashmap_size);
   }
-
-  void check(const uint32_t topk) override
-  {
-    RAFT_EXPECTS(num_cta_per_query * 32 >= topk,
-                 "`num_cta_per_query` (%u) * 32 must be equal to or greater than "
-                 "`topk` (%u) when 'search_mode' is \"multi-cta\". "
-                 "(`num_cta_per_query`=max(`search_width`, ceildiv(`itopk_size`, 32)))",
-                 num_cta_per_query,
-                 topk);
-  }
-
-  ~search() {}
   using base_type::operator();
   void operator()(raft::resources const& res,
                   raft::device_matrix_view<const INDEX_T, int64_t, raft::row_major> graph,
-                  INDEX_T* const topk_indices_ptr,       // [num_queries, topk]
-                  DISTANCE_T* const topk_distances_ptr,  // [num_queries, topk]
-                  const DATA_T* const queries_ptr,       // [num_queries, dataset_dim]
-                  const uint32_t num_queries,
-                  const INDEX_T* dev_seed_ptr,              // [num_queries, num_seeds]
-                  uint32_t* const num_executed_iterations,  // [num_queries,]
+                  INDEX_T* const result_indices_ptr,       // [num_queries, topk]
+                  DISTANCE_T* const result_distances_ptr,  // [num_queries, topk]
+                  const DATA_T* const queries_ptr,         // [num_queries, dataset_dim]
+                  const uint32_t* query_labels_ptr,      // [num_queries]
+                  const uint32_t* index_map_ptr,           // [graph size]
+                  const uint32_t* label_size_ptr,          // [num_labels]
+                  const uint32_t* label_offset_ptr,        // [num_labels]
+                  const std::uint32_t num_queries,
+                  const INDEX_T* dev_seed_ptr,                   // [num_queries, num_seeds]
+                  std::uint32_t* const num_executed_iterations,  // [num_queries]
                   uint32_t topk,
                   SAMPLE_FILTER_T sample_filter)
   {
     cudaStream_t stream = raft::resource::get_cuda_stream(res);
     select_and_run(dataset_desc,
                    graph,
-                   intermediate_indices.data(),
-                   intermediate_distances.data(),
+                   result_indices_ptr,
+                   result_distances_ptr,
                    queries_ptr,
+                   query_labels_ptr,
+                   index_map_ptr,
+                   label_size_ptr,
+                   label_offset_ptr,
                    num_queries,
                    dev_seed_ptr,
                    num_executed_iterations,
                    *this,
                    topk,
-                   thread_block_size,
-                   result_buffer_size,
+                   num_itopk_candidates,
+                   static_cast<uint32_t>(thread_block_size),
                    smem_size,
                    hash_bitlen,
                    hashmap.data(),
-                   num_cta_per_query,
+                   small_hash_bitlen,
+                   small_hash_reset_interval,
                    num_seeds,
                    sample_filter,
                    stream);
-    RAFT_CUDA_TRY(cudaPeekAtLastError());
-
-    // Select the top-k results from the intermediate results
-    const uint32_t num_intermediate_results = num_cta_per_query * itopk_size;
-    _cuann_find_topk(topk,
-                     num_queries,
-                     num_intermediate_results,
-                     intermediate_distances.data(),
-                     num_intermediate_results,
-                     intermediate_indices.data(),
-                     num_intermediate_results,
-                     topk_distances_ptr,
-                     topk,
-                     topk_indices_ptr,
-                     topk,
-                     topk_workspace.data(),
-                     true,
-                     NULL,
-                     stream);
   }
 };
 
-}  // namespace multi_cta_search
+}  // namespace filtered_single_cta_search
 }  // namespace cuvs::neighbors::cagra::detail

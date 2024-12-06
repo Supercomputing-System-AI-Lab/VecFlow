@@ -326,6 +326,42 @@ void search_with_filtering(raft::resources const& res,
     res, params, idx, queries_internal, neighbors_internal, distances_internal, sample_filter);
 }
 
+template <typename T, typename IdxT, typename CagraSampleFilterT>
+void filtered_search_with_filtering(raft::resources const& res,
+                                    const search_params& params,
+                                    const index<T, IdxT>& idx,
+                                    raft::device_matrix_view<const T, int64_t, raft::row_major> queries,
+                                    raft::device_matrix_view<IdxT, int64_t, raft::row_major> neighbors,
+                                    raft::device_matrix_view<float, int64_t, raft::row_major> distances,
+                                    raft::device_vector_view<uint32_t, int64_t> query_labels,
+                                    raft::device_vector_view<uint32_t, int64_t> index_map,
+                                    raft::device_vector_view<uint32_t, int64_t> label_size,
+                                    raft::device_vector_view<uint32_t, int64_t> label_offset,
+                                    CagraSampleFilterT sample_filter = CagraSampleFilterT())
+{
+  RAFT_EXPECTS(
+    queries.extent(0) == neighbors.extent(0) && queries.extent(0) == distances.extent(0),
+    "Number of rows in output neighbors and distances matrices must equal the number of queries.");
+
+  RAFT_EXPECTS(neighbors.extent(1) == distances.extent(1),
+               "Number of columns in output neighbors and distances matrices must equal k");
+  RAFT_EXPECTS(queries.extent(1) == idx.dim(),
+               "Number of query dimensions should equal number of dimensions in the index.");
+
+  using internal_IdxT   = typename std::make_unsigned<IdxT>::type;
+  auto queries_internal = raft::make_device_matrix_view<const T, int64_t, raft::row_major>(
+    queries.data_handle(), queries.extent(0), queries.extent(1));
+  auto neighbors_internal = raft::make_device_matrix_view<internal_IdxT, int64_t, raft::row_major>(
+    reinterpret_cast<internal_IdxT*>(neighbors.data_handle()),
+    neighbors.extent(0),
+    neighbors.extent(1));
+  auto distances_internal = raft::make_device_matrix_view<float, int64_t, raft::row_major>(
+    distances.data_handle(), distances.extent(0), distances.extent(1));
+
+  return cagra::detail::filtered_search_main<T, internal_IdxT, CagraSampleFilterT, IdxT>(
+    res, params, idx, queries_internal, neighbors_internal, distances_internal, query_labels, index_map, label_size, label_offset, sample_filter);
+}
+
 template <typename T, typename IdxT>
 void search(raft::resources const& res,
             const search_params& params,
@@ -356,6 +392,42 @@ void search(raft::resources const& res,
     RAFT_FAIL("Unsupported sample filter type");
   }
 }
+
+template <typename T, typename IdxT>
+void filtered_search(raft::resources const& res,
+                     const search_params& params,
+                     const index<T, IdxT>& idx,
+                     raft::device_matrix_view<const T, int64_t, raft::row_major> queries,
+                     raft::device_matrix_view<IdxT, int64_t, raft::row_major> neighbors,
+                     raft::device_matrix_view<float, int64_t, raft::row_major> distances,
+                     raft::device_vector_view<uint32_t, int64_t> query_labels,
+                     raft::device_vector_view<uint32_t, int64_t> index_map,
+                     raft::device_vector_view<uint32_t, int64_t> label_size,
+                     raft::device_vector_view<uint32_t, int64_t> label_offset,
+                     const cuvs::neighbors::filtering::base_filter& sample_filter_ref)
+{
+  try {
+    using none_filter_type  = cuvs::neighbors::filtering::none_sample_filter;
+    auto& sample_filter     = dynamic_cast<const none_filter_type&>(sample_filter_ref);
+    auto sample_filter_copy = sample_filter;
+    return filtered_search_with_filtering<T, IdxT, none_filter_type>(
+      res, params, idx, queries, neighbors, distances, query_labels, index_map, label_size, label_offset, sample_filter_copy);
+    return;
+  } catch (const std::bad_cast&) {
+  }
+
+  try {
+    auto& sample_filter =
+      dynamic_cast<const cuvs::neighbors::filtering::bitset_filter<uint32_t, int64_t>&>(
+        sample_filter_ref);
+    auto sample_filter_copy = sample_filter;
+    return filtered_search_with_filtering<T, IdxT, decltype(sample_filter_copy)>(
+      res, params, idx, queries, neighbors, distances, query_labels, index_map, label_size, label_offset, sample_filter_copy);
+  } catch (const std::bad_cast&) {
+    RAFT_FAIL("Unsupported sample filter type");
+  }
+}
+                     
 
 template <class T, class IdxT, class Accessor>
 void extend(
