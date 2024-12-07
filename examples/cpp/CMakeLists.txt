@@ -29,6 +29,11 @@ rapids_cuda_init_architectures(test_cuvs)
 project(test_cuvs LANGUAGES CXX CUDA)
 find_package(Threads)
 
+find_package(OpenMP REQUIRED)
+if(OPENMP_FOUND)
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-fopenmp")
+endif()
+
 # ------------- configure cuvs -----------------#
 
 rapids_cpm_init()
@@ -36,14 +41,23 @@ set(BUILD_CUVS_C_LIBRARY OFF)
 include(../cmake/thirdparty/get_cuvs.cmake)
 
 # -------------- compile tasks ----------------- #
-add_executable(CAGRA_FILTER_YFCC src/cagra_filter_yfcc.cu)
-add_executable(CAGRA_FILTER src/cagra_filter.cu)
+# add_executable(CAGRA_FILTER_YFCC src/cagra_filter_yfcc.cu)
+# add_executable(CAGRA_FILTER src/cagra_filter.cu)
+# add_executable(CAGRA_CREATE_SUBGRAPH src/cagra_subgraph.cu)
+add_executable(CAGRA_FILTER_TEST src/cagra_filter_test.cu)
 # add_executable(CAGRA_EXAMPLE src/cagra_example.cu)
 # add_executable(CAGRA_PERSISTENT_EXAMPLE src/cagra_persistent_example.cu)
 
 # `$<TARGET_NAME_IF_EXISTS:conda_env>` is a generator expression that ensures that targets are
 # installed in a conda environment, if one exists
-target_link_libraries(CAGRA_FILTER PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
-target_link_libraries(CAGRA_FILTER_YFCC PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
+# target_link_libraries(CAGRA_FILTER PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
+# target_link_libraries(CAGRA_FILTER_YFCC PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
 # target_link_libraries(CAGRA_EXAMPLE PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
 # target_link_libraries(CAGRA_PERSISTENT_EXAMPLE PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env> Threads::Threads)
+
+# target_link_libraries(CAGRA_CREATE_SUBGRAPH PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
+
+target_link_libraries(CAGRA_FILTER_TEST 
+                      PUBLIC OpenMP::OpenMP_CXX
+                      PRIVATE cuvs::cuvs 
+                      PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
