@@ -23,20 +23,17 @@
  *
  */
 
-#include "sample_filter_utils.cuh"
 #include "search_multi_cta_inst.cuh"
+#include "sample_filter_utils.cuh"
 
 #define COMMA ,
 
 namespace cuvs::neighbors::cagra::detail::multi_cta_search {
-instantiate_kernel_selection(float,
-                             uint32_t,
-                             float,
-                             cuvs::neighbors::filtering::none_sample_filter);
-instantiate_kernel_selection(float,
-                             uint32_t,
-                             float,
-                             CagraSampleFilterWithQueryIdOffset<
-                               cuvs::neighbors::filtering::bitset_filter<uint32_t COMMA int64_t>>);
+instantiate_kernel_selection(
+  float, uint32_t, float, cuvs::neighbors::filtering::none_sample_filter);
+instantiate_kernel_selection(
+  float, uint32_t, float, CagraSampleFilterWithQueryIdOffset<cuvs::neighbors::filtering::bitset_filter<uint32_t COMMA int64_t>>);
+instantiate_kernel_selection(
+  float, uint32_t, float, CagraSampleFilterWithQueryIdOffset<cuvs::neighbors::filtering::cagra_filter>);
 
 }  // namespace cuvs::neighbors::cagra::detail::multi_cta_search

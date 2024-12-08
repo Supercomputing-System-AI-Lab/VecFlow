@@ -526,6 +526,21 @@ __global__ void copy_dataset(raft::device_matrix_view<const float, int64_t> data
   }
 }
 
+__global__ void copy_dataset_uint8(raft::device_matrix_view<const uint8_t, int64_t> dataset, 
+                                  raft::device_matrix_view<uint8_t, int64_t> filtered_dataset,
+                                  raft::device_vector_view<int> matching_indices) {
+  const int num_rows = filtered_dataset.extent(0);
+  const int num_cols = filtered_dataset.extent(1);
+  const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  for(int idx = tid; idx < num_rows * num_cols; idx += blockDim.x * gridDim.x) {
+    const int row = idx / num_cols;
+    const int col = idx % num_cols;
+    if(row < num_rows && col < num_cols) {
+      filtered_dataset(row, col) = dataset(matching_indices(row), col);
+    }
+  }
+}
+
 
 __global__ void copy_neighbors(raft::device_matrix_view<int64_t, int64_t> bf_neighbors, 
                             raft::device_matrix_view<uint32_t, int64_t> neighbors,
@@ -576,19 +591,4 @@ __global__ void c_neighbors(raft::device_matrix_view<int64_t, int64_t> bf_neighb
   neighbors(0, i) = (uint32_t)matching_indices[bf_neighbors(0, i)];
 }
 
-
-__global__ void copy_dataset_uint8(raft::device_matrix_view<const uint8_t, int64_t> dataset, 
-                                  raft::device_matrix_view<uint8_t, int64_t> filtered_dataset,
-                                  raft::device_vector_view<int> matching_indices) {
-  const int num_rows = filtered_dataset.extent(0);
-  const int num_cols = filtered_dataset.extent(1);
-  const int tid = blockDim.x * blockIdx.x + threadIdx.x;
-  for(int idx = tid; idx < num_rows * num_cols; idx += blockDim.x * gridDim.x) {
-    const int row = idx / num_cols;
-    const int col = idx % num_cols;
-    if(row < num_rows && col < num_cols) {
-      filtered_dataset(row, col) = dataset(matching_indices(row), col);
-    }
-  }
-}
 

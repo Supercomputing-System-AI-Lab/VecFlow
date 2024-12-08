@@ -19,6 +19,7 @@
 #include "utils.h"
 
 #include <cuvs/neighbors/cagra.hpp>
+#include <cuvs/neighbors/brute_force.hpp>
 #include <raft/core/device_mdarray.hpp>
 #include <raft/core/device_resources.hpp>
 #include <raft/random/make_blobs.cuh>
@@ -150,6 +151,59 @@ void time_it(std::string label, F f, Args &&...xs) {
 }
 
 
+void compute_recall(const raft::host_matrix_view<uint32_t, int64_t>& neighbors,
+                   const std::vector<std::vector<uint32_t>>& gt_indices,
+                   const std::vector<int64_t>& valid_query_indices,
+                   const std::vector<std::vector<int>>& query_label_vecs)
+{
+  int n_queries = neighbors.extent(0);
+  int topk = neighbors.extent(1);
+  float total_recall = 0.0f;
+
+  // Read specificities
+  std::vector<double> specificities = read_specificities("/u/cmo1/Filtered/cuvs/examples/cpp/src/query_specificities.txt",
+                                                       n_queries);
+  // Open CSV file for writing
+  std::ofstream outfile("/u/cmo1/Filtered/cuvs/examples/cpp/src/result/recall_results.csv");
+  if (!outfile.is_open()) {
+    throw std::runtime_error("Failed to open output file");
+  }
+
+  // Write CSV header
+  outfile << "query_id,labels,specificity,recall\n";
+
+  for (int i = 0; i < neighbors.extent(0); i++) {
+    int matches = 0;
+    auto gt_idx = valid_query_indices[i];
+    for (int j = 0; j < topk; j++) {
+      uint32_t neighbor_idx = neighbors(i, j);
+      if (std::find(gt_indices[gt_idx].begin(), gt_indices[gt_idx].end(), neighbor_idx) != gt_indices[gt_idx].end()) {
+        matches++;
+      }
+    }
+    float recall = static_cast<float>(matches) / topk;
+    total_recall += recall;
+
+    // Write to CSV: query_id, number of labels, specificity, recall
+    outfile << gt_idx << ",";
+    outfile << query_label_vecs[i][0];
+    if (query_label_vecs[i].size() > 1) {
+      outfile << "," << query_label_vecs[i][1];
+    } else {
+      outfile << ",";  // Empty second label field if there isn't one
+    }
+    outfile << "," << specificities[i] << "," 
+            << recall << "\n";
+  }
+
+  // Close the file
+  outfile.close();
+
+  // Print summary to console
+  std::cout << "Total queries: " << n_queries << " Average Recall: " << total_recall / n_queries << std::endl;
+  std::cout << "Results have been written to recall_results.csv" << std::endl;
+}
+
 void cagra_build_search_variants(shared_resources::configured_raft_resources& dev_resources,
                                 raft::device_matrix_view<const uint8_t, int64_t> dataset,
                                 raft::device_matrix_view<const uint8_t, int64_t> queries,
@@ -221,9 +275,18 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   std::vector<int64_t> valid_query_indices;
   n_queries = 0;
   for (int64_t i = 0; i < query_label_vecs.size(); i++) {
-    if (cat_freq[query_label_vecs[i][0]] >= specificity_threshould) {
-      valid_query_indices.push_back(i);
-      n_queries ++;
+    if (query_label_vecs[i].size() == 1) {
+      if (cat_freq[query_label_vecs[i][0]] >= specificity_threshould) {
+        valid_query_indices.push_back(i);
+        n_queries ++;
+      }
+    } else {
+      int label1 = query_label_vecs[i][0];
+      int label2 = query_label_vecs[i][1];
+      if (min(cat_freq[label1], cat_freq[label2]) >= specificity_threshould) {
+        valid_query_indices.push_back(i);
+        n_queries ++;
+      }
     }
   }
   // Copy valid queries to new matrix
@@ -236,26 +299,91 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   }
   // Create filtered query labels vector
   auto filtered_query_labels = raft::make_device_vector<uint32_t, int64_t>(dev_resources, n_queries);
+  auto query_second_labels = raft::make_device_vector<int>(dev_resources, n_queries);
   std::vector<uint32_t> h_filtered_labels(n_queries);
+  std::vector<int> h_filtered_second_labels(n_queries);
   
   // Map original labels to new indices using label_map
   for (int64_t i = 0; i < n_queries; i++) {
-    h_filtered_labels[i] = query_label_vecs[valid_query_indices[i]][0];
+    if (query_label_vecs[valid_query_indices[i]].size() == 1) {
+      h_filtered_labels[i] = query_label_vecs[valid_query_indices[i]][0];
+      h_filtered_second_labels[i] = -1;      
+    } else {
+      int label1 = query_label_vecs[valid_query_indices[i]][0];
+      int label2 = query_label_vecs[valid_query_indices[i]][1];
+      if (cat_freq[label1] <= cat_freq[label2]) {
+        h_filtered_labels[i] = label1;
+        h_filtered_second_labels[i] = label2;
+      } else {
+        h_filtered_labels[i] = label2;
+        h_filtered_second_labels[i] = label1;
+      }
+    }
   }
   // Copy mapped labels to device
   raft::update_device(filtered_query_labels.data_handle(),
                      h_filtered_labels.data(),
                      n_queries,
                      raft::resource::get_cuda_stream(dev_resources));
+  raft::update_device(query_second_labels.data_handle(),
+                     h_filtered_second_labels.data(),
+                     n_queries,
+                     raft::resource::get_cuda_stream(dev_resources));
+
+  // Create data labels vector
+  std::vector<int> h_data_label_offsets(data_label_vecs.size());
+  auto data_label_offsets = raft::make_device_vector<int>(dev_resources, data_label_vecs.size());
+  int total_data_labels = 0;
+  for (int i = 0; i < data_label_vecs.size(); i++) {
+    total_data_labels += data_label_vecs[i].size();
+    h_data_label_offsets[i] = total_data_labels;
+  }
+  std::vector<int> h_data_labels(total_data_labels);
+  auto data_labels = raft::make_device_vector<int>(dev_resources, total_data_labels);
+  for (int i = 0; i < data_label_vecs.size(); i++) {
+    for (int j = 0; j < data_label_vecs[i].size(); j++) {
+      h_data_labels[h_data_label_offsets[i] - data_label_vecs[i].size() + j] = data_label_vecs[i][j];
+    }
+  }
+  raft::update_device(data_label_offsets.data_handle(),
+                     h_data_label_offsets.data(),
+                     data_label_vecs.size(),
+                     raft::resource::get_cuda_stream(dev_resources));
+  raft::update_device(data_labels.data_handle(),
+                     h_data_labels.data(),
+                     total_data_labels,
+                     raft::resource::get_cuda_stream(dev_resources));
+
+  // Load filter
+  raft::resource::sync_stream(dev_resources);
+  filtering::cagra_filter filter(data_labels.view(),
+                                query_second_labels.view(),
+                                data_label_offsets.view());
 
   // Resize result arrays for filtered queries
   neighbors = raft::make_device_matrix<uint32_t, int64_t>(dev_resources, n_queries, topk);
   distances = raft::make_device_matrix<float, int64_t>(dev_resources, n_queries, topk);
+
+  // warm-up
+  raft::resource::sync_stream(dev_resources);
+  cagra::filtered_search(dev_resources, 
+                        filtered_search_params,
+                        index,
+                        filtered_queries.view(),
+                        neighbors.view(),
+                        distances.view(),
+                        filtered_query_labels.view(),
+                        combined_indices.index_map.view(),
+                        combined_indices.label_size.view(),
+                        combined_indices.label_offset.view(),
+                        filter);
+  raft::resource::sync_stream(dev_resources);
+
   // Batch filtered search
   std::cout << "Total queries: " << n_queries << std::endl;
   std::cout << "Specificity threshold: " << (double)(specificity_threshould) / 10000000 << std::endl;
   time_it("filtered/batch", [&]() {
-    cagra::filtereds_search(dev_resources, 
+    cagra::filtered_search(dev_resources, 
                          filtered_search_params,
                          index,
                          filtered_queries.view(),
@@ -264,9 +392,19 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
                          filtered_query_labels.view(),
                          combined_indices.index_map.view(),
                          combined_indices.label_size.view(),
-                         combined_indices.label_offset.view());
+                         combined_indices.label_offset.view(),
+                         filter);
     raft::resource::sync_stream(dev_resources);
   });
+
+  // Compute recall
+  auto h_neighbors = raft::make_host_matrix<uint32_t, int64_t>(n_queries, topk);
+  raft::copy(h_neighbors.data_handle(), neighbors.data_handle(), neighbors.size(), raft::resource::get_cuda_stream(dev_resources));
+  // Read ground truth neighbors
+  std::string gt_fname = "/u/cmo1/Filtered/bench/data/yfcc100M/GT.public.ibin";
+  std::vector<std::vector<uint32_t>> gt_indices;
+  read_gt_file(gt_fname, gt_indices);
+  compute_recall(h_neighbors.view(), gt_indices, valid_query_indices, query_label_vecs);
 }
 
 auto load_data_bin(const std::string& file_path) -> std::tuple<std::vector<uint8_t>, int64_t, int64_t> {
@@ -304,7 +442,6 @@ int main(int argc, char** argv) {
   std::string data_label_fname = "/u/cmo1/Filtered/bench/data/yfcc100M/base.sorted.metadata.10M.spmat";
   std::string query_fname = "/u/cmo1/Filtered/bench/data/yfcc100M/query.public.100K.u8bin";
   std::string query_label_fname = "/u/cmo1/Filtered/bench/data/yfcc100M/query.metadata.public.100K.spmat";
-  std::string gt_fname = "/u/cmo1/Filtered/bench/data/yfcc100M/GT.public.ibin";
 
   std::vector<uint8_t> h_data;
   std::vector<uint8_t> h_queries;
@@ -330,7 +467,6 @@ int main(int argc, char** argv) {
   raft::copy(dataset.data_handle(), h_data.data(), h_data.size(), stream);
   raft::copy(queries.data_handle(), h_queries.data(), h_queries.size(), stream);
 
-  
 
   // run the interesting part of the program
   cagra_build_search_variants(dev_resources, 

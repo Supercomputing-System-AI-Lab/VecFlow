@@ -213,7 +213,7 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
     }
     RAFT_LOG_DEBUG("# hashmap_size: %lu", hashmap_size);
   }
-
+  using base_type::operator();
   void operator()(raft::resources const& res,
                   raft::device_matrix_view<const INDEX_T, int64_t, raft::row_major> graph,
                   INDEX_T* const result_indices_ptr,       // [num_queries, topk]

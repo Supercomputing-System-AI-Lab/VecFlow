@@ -416,9 +416,20 @@ void filtered_search(raft::resources const& res,
   } catch (const std::bad_cast&) {
   }
 
+  // try {
+  //   auto& sample_filter =
+  //     dynamic_cast<const cuvs::neighbors::filtering::bitset_filter<uint32_t, int64_t>&>(
+  //       sample_filter_ref);
+  //   auto sample_filter_copy = sample_filter;
+  //   return filtered_search_with_filtering<T, IdxT, decltype(sample_filter_copy)>(
+  //     res, params, idx, queries, neighbors, distances, query_labels, index_map, label_size, label_offset, sample_filter_copy);
+  // } catch (const std::bad_cast&) {
+  //   RAFT_FAIL("Unsupported sample filter type");
+  // }
+
   try {
     auto& sample_filter =
-      dynamic_cast<const cuvs::neighbors::filtering::bitset_filter<uint32_t, int64_t>&>(
+      dynamic_cast<const cuvs::neighbors::filtering::cagra_filter&>(
         sample_filter_ref);
     auto sample_filter_copy = sample_filter;
     return filtered_search_with_filtering<T, IdxT, decltype(sample_filter_copy)>(
