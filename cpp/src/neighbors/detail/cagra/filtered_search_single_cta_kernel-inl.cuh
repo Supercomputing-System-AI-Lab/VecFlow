@@ -794,7 +794,8 @@ __device__ void search_core(
       for (unsigned p = threadIdx.x; p < search_width; p += blockDim.x) {
         if (parent_list_buffer[p] != invalid_index) {
           const auto parent_id = result_indices_buffer[parent_list_buffer[p]] & ~index_msb_1_mask;
-          if (!sample_filter(query_id, parent_id)) {
+          const auto sample_id = index_map_ptr[parent_id + label_offset];
+          if (!sample_filter(query_id, sample_id)) {
             // If the parent must not be in the resulting top-k list, remove from the parent list
             result_distances_buffer[parent_list_buffer[p]] = utils::get_max_value<DISTANCE_T>();
             result_indices_buffer[parent_list_buffer[p]]   = invalid_index;
@@ -817,7 +818,8 @@ __device__ void search_core(
     for (unsigned i = threadIdx.x; i < internal_topk + search_width * graph_degree;
          i += blockDim.x) {
       const auto node_id = result_indices_buffer[i] & ~index_msb_1_mask;
-      if (node_id != (invalid_index & ~index_msb_1_mask) && !sample_filter(query_id, node_id)) {
+      const auto sample_id = index_map_ptr[node_id + label_offset];
+      if (node_id != (invalid_index & ~index_msb_1_mask) && !sample_filter(query_id, sample_id)) {
         result_distances_buffer[i] = utils::get_max_value<DISTANCE_T>();
         result_indices_buffer[i]   = invalid_index;
       }

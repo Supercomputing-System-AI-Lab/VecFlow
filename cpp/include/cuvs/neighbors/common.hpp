@@ -508,6 +508,8 @@ inline _RAFT_HOST_DEVICE bool cagra_filter::operator()(
   int sample_end = data_label_offsets_[sample_ix];
   int query_cat = query_labels_[query_ix];
 
+  // printf("Query id: %d, Query Label: %d\n", query_ix, query_cat);
+
   if (query_cat == -1) return true;
   int left = sample_start;
   int right = sample_end - 1;
@@ -523,7 +525,7 @@ inline _RAFT_HOST_DEVICE bool cagra_filter::operator()(
       right = mid - 1;
     }
   }
-  return true;
+  return false;
 }
 
 /**
