@@ -44,7 +44,11 @@ include(../cmake/thirdparty/get_cuvs.cmake)
 # add_executable(CAGRA_FILTER_YFCC src/cagra_filter_yfcc.cu)
 # add_executable(CAGRA_FILTER src/cagra_filter.cu)
 # add_executable(CAGRA_CREATE_SUBGRAPH src/cagra_subgraph.cu)
-add_executable(CAGRA_FILTER_TEST src/cagra_filter_test.cu)
+# add_executable(CAGRA_FILTER_TEST src/cagra_filter_test.cu)
+# add_executable(BRUTE_FORCE_SEARCH src/brute_force_test.cu)
+# add_executable(REFINE_TEST src/refine_test.cu)
+add_executable(BFS_TEST src/filtered_bfs_test.cu)
+add_executable(BFS_YFCC src/filtered_bfs_yfcc.cu)
 # add_executable(CAGRA_EXAMPLE src/cagra_example.cu)
 # add_executable(CAGRA_PERSISTENT_EXAMPLE src/cagra_persistent_example.cu)
 
@@ -57,7 +61,8 @@ add_executable(CAGRA_FILTER_TEST src/cagra_filter_test.cu)
 
 # target_link_libraries(CAGRA_CREATE_SUBGRAPH PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
 
-target_link_libraries(CAGRA_FILTER_TEST 
-                      PUBLIC OpenMP::OpenMP_CXX
-                      PRIVATE cuvs::cuvs 
-                      PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
+# target_link_libraries(CAGRA_FILTER_TEST PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
+# target_link_libraries(BRUTE_FORCE_SEARCH PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
+# target_link_libraries(REFINE_TEST PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
+target_link_libraries(BFS_TEST PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
+target_link_libraries(BFS_YFCC PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)

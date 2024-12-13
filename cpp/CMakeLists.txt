@@ -450,6 +450,14 @@ if(BUILD_SHARED_LIBS)
     src/neighbors/nn_descent_int8.cu
     src/neighbors/nn_descent_uint8.cu
     src/neighbors/reachability.cu
+    src/neighbors/filtered_bfs/detail/build_filtered_ivf_float.cu
+    src/neighbors/filtered_bfs/detail/build_filtered_ivf_half.cu
+    src/neighbors/filtered_bfs/detail/build_filtered_ivf_int8_t.cu
+    src/neighbors/filtered_bfs/detail/build_filtered_ivf_uint8_t.cu
+    src/neighbors/filtered_bfs/detail/search_filtered_ivf_float.cu
+    src/neighbors/filtered_bfs/detail/search_filtered_ivf_half.cu
+    src/neighbors/filtered_bfs/detail/search_filtered_ivf_int8_t.cu
+    src/neighbors/filtered_bfs/detail/search_filtered_ivf_uint8_t.cu
     src/neighbors/refine/detail/refine_device_float_float.cu
     src/neighbors/refine/detail/refine_device_half_float.cu
     src/neighbors/refine/detail/refine_device_int8_t_float.cu
