@@ -890,10 +890,14 @@ __device__ void search_core(
     if (TOPK_BY_BITONIC_SORT) { ii = device::swizzling(i); }
     if (result_distances_ptr != nullptr) { result_distances_ptr[j] = result_distances_buffer[ii]; }
     constexpr INDEX_T index_msb_1_mask = utils::gen_index_msb_1_mask<INDEX_T>::value;
-
-    result_indices_ptr[j] =
+    const INDEX_T invalid_index        = utils::get_max_value<INDEX_T>();
+    if (result_indices_buffer[ii] == invalid_index) {
+      result_indices_ptr[j] = invalid_index;
+    } else {
+      result_indices_ptr[j] =
       result_indices_buffer[ii] & ~index_msb_1_mask;  // clear most significant bit
-    result_indices_ptr[j] = index_map_ptr[result_indices_ptr[j]+label_offset];
+      result_indices_ptr[j] = index_map_ptr[result_indices_ptr[j]+label_offset];
+    }
   }
   if (threadIdx.x == 0 && num_executed_iterations != nullptr) {
     num_executed_iterations[query_id] = iter + 1;

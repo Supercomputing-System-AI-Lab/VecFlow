@@ -476,13 +476,15 @@ struct bitset_filter : public base_filter {
  */
 struct cagra_filter : public base_filter {
   // Views of the data
-  const raft::device_vector_view<const int> data_labels_;    
-  const raft::device_vector_view<const int> query_labels_;   
-  const raft::device_vector_view<const int> data_label_offsets_;  
+  raft::device_vector_view<uint32_t, int64_t> data_labels_;
+  raft::device_vector_view<uint32_t, int64_t> data_label_size_;
+  raft::device_vector_view<uint32_t, int64_t> data_label_offset_;
+  raft::device_vector_view<int64_t, int64_t> query_labels_;
 
-  cagra_filter(const raft::device_vector_view<const int> data_labels,
-              const raft::device_vector_view<const int> query_labels,
-              const raft::device_vector_view<const int> data_label_offsets);
+  cagra_filter(raft::device_vector_view<uint32_t, int64_t> data_labels,
+               raft::device_vector_view<uint32_t, int64_t> data_label_size,
+               raft::device_vector_view<uint32_t, int64_t> data_label_offset,
+               raft::device_vector_view<int64_t, int64_t> query_labels);
 
   inline _RAFT_HOST_DEVICE bool operator()(
     const uint32_t query_ix,
@@ -490,12 +492,14 @@ struct cagra_filter : public base_filter {
 };
 
 inline cagra_filter::cagra_filter(
-    const raft::device_vector_view<const int> data_labels,
-    const raft::device_vector_view<const int> query_labels,
-    const raft::device_vector_view<const int> data_label_offsets)
-    : data_labels_{data_labels}, 
-      query_labels_{query_labels},
-      data_label_offsets_{data_label_offsets}
+    raft::device_vector_view<uint32_t, int64_t> data_labels,
+    raft::device_vector_view<uint32_t, int64_t> data_label_size,
+    raft::device_vector_view<uint32_t, int64_t> data_label_offset,
+    raft::device_vector_view<int64_t, int64_t> query_labels)
+    : data_labels_{data_labels},
+      data_label_size_{data_label_size},
+      data_label_offset_{data_label_offset},
+      query_labels_{query_labels}
 {
 }
 
@@ -503,23 +507,18 @@ inline _RAFT_HOST_DEVICE bool cagra_filter::operator()(
   const uint32_t query_ix,
   const uint32_t sample_ix) const 
 {
-  // printf("Query id: %d, Sample id: %d\n", query_ix, sample_ix);
-  int sample_start = sample_ix == 0 ? 0 : data_label_offsets_[sample_ix - 1];
-  int sample_end = data_label_offsets_[sample_ix];
-  int query_cat = query_labels_[query_ix];
+  auto query_label = query_labels_[query_ix];
+  if (query_label == -1) return true;
 
-  // printf("Query id: %d, Query Label: %d\n", query_ix, query_cat);
-
-  if (query_cat == -1) return true;
-  int left = sample_start;
-  int right = sample_end - 1;
+  uint32_t left = data_label_offset_[sample_ix];;
+  uint32_t right = left + data_label_size_[sample_ix] - 1;
   while (left <= right) {
-    int mid = left + (right - left) / 2;
-    int mid_val = data_labels_[mid];
-    if (mid_val == query_cat) {
+    uint32_t mid = left + (right - left) / 2;
+    uint32_t mid_val = data_labels_[mid];
+    if (mid_val == query_label) {
       return true;
     }
-    if (mid_val < query_cat) {
+    if (mid_val < query_label) {
       left = mid + 1;
     } else {
       right = mid - 1;
