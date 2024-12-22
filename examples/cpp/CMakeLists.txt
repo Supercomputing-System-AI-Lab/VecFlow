@@ -51,7 +51,6 @@ add_executable(BFS_YFCC src/filtered_bfs_yfcc.cu)
 add_executable(BFS_BENCH src/filtered_bfs_bench.cu)
 add_executable(CAGRA_FILTER_BENCH src/cagra_filter_bench.cu)
 add_executable(CAGRA_FILTER_TEST src/cagra_filter_test.cu)
-add_executable(MATRIX_SAVE_TEST src/matrix_save_test.cu)
 # add_executable(CAGRA_EXAMPLE src/cagra_example.cu)
 # add_executable(CAGRA_PERSISTENT_EXAMPLE src/cagra_persistent_example.cu)
 
@@ -69,4 +68,3 @@ target_link_libraries(BFS_YFCC PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_
 target_link_libraries(BFS_BENCH PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
 target_link_libraries(CAGRA_FILTER_BENCH PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
 target_link_libraries(CAGRA_FILTER_TEST PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
-target_link_libraries(MATRIX_SAVE_TEST PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env>)
