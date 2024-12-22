@@ -104,7 +104,7 @@ auto load_and_combine_indices(raft::resources const& res,
                               const std::vector<std::vector<int>>& query_label_vecs,
                               const std::vector<int>& query_freq,
                               const std::vector<int>& cat_freq,
-                              int specificity_threshould) -> CombinedIndices {
+                              int specificity_threshold) -> CombinedIndices {
   
   int label_number = query_freq.size();
     
@@ -193,7 +193,7 @@ auto load_and_combine_indices(raft::resources const& res,
     if (query_label_vecs[i].size() == 1) continue;
     int label1 = query_label_vecs[i][0];
     int label2 = query_label_vecs[i][1];
-    if (min(cat_freq[label1], cat_freq[label2]) <= specificity_threshould) continue;
+    if (min(cat_freq[label1], cat_freq[label2]) <= specificity_threshold) continue;
     h_query_labels.push_back((cat_freq[label1] > cat_freq[label2]) ? label1 : label2);
     n_double_queries++;
   }
@@ -309,7 +309,7 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
                                 const std::vector<int>& query_freq,
                                 int single_query_itopk_size = 32,
                                 int double_query_itopk_size = 32,
-                                int specificity_threshould = 0) {
+                                int specificity_threshold = 0) {
 
   int64_t topk = 10;
   int64_t n_queries = queries.extent(0);
@@ -358,7 +358,7 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
                                                   query_label_vecs, 
                                                   query_freq, 
                                                   cat_freq,
-                                                  specificity_threshould);
+                                                  specificity_threshold);
   // index.update_graph(dev_resources, raft::make_const_mdspan(combined_indices.final_matrix.view()));
   // save_matrix_to_ibin(dev_resources, graph_file, combined_indices.final_matrix.view());
   // std::cout << "Filtered index has " << index.size() << " vectors" << std::endl;
@@ -372,12 +372,12 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   int n_double_queries = 0;
   for (int64_t i = 0; i < query_label_vecs.size(); i++) {
     if (query_label_vecs[i].size() == 1) {
-      if (cat_freq[query_label_vecs[i][0]] <= specificity_threshould) continue;
+      if (cat_freq[query_label_vecs[i][0]] <= specificity_threshold) continue;
       n_single_queries ++;
     } else {
       int label1 = query_label_vecs[i][0];
       int label2 = query_label_vecs[i][1];
-      if (min(cat_freq[label1], cat_freq[label2]) <= specificity_threshould) continue;
+      if (min(cat_freq[label1], cat_freq[label2]) <= specificity_threshold) continue;
       n_double_queries ++;
     }
   }
@@ -390,14 +390,14 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   int current_double = 0;
   for (int64_t i = 0; i < query_label_vecs.size(); i++) {
     if (query_label_vecs[i].size() == 1) {
-      if (cat_freq[query_label_vecs[i][0]] <= specificity_threshould) continue;
+      if (cat_freq[query_label_vecs[i][0]] <= specificity_threshold) continue;
       h_single_filtered_labels[current_single] = query_label_vecs[i][0];
       single_query_indices[current_single] = i;
       current_single++;
     } else {
       int label1 = query_label_vecs[i][0];
       int label2 = query_label_vecs[i][1];
-      if (min(cat_freq[label1], cat_freq[label2]) <= specificity_threshould) continue;
+      if (min(cat_freq[label1], cat_freq[label2]) <= specificity_threshold) continue;
       int label = (cat_freq[label1] <= cat_freq[label2]) ? label1 : label2;
       h_double_filtered_labels[current_double] = label;
       double_query_indices[current_double] = i;
@@ -505,6 +505,7 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   std::cout << "\n=== Single Label Search Performance ===" << std::endl;
   std::cout << "Queries: " << n_single_queries << std::endl;
   std::cout << "iTopK: " << single_query_itopk_size << std::endl;
+  std::cout << "Specificity threshold: " << specificity_threshold << std::endl;
   std::cout << "Average time: " << std::fixed << std::setprecision(2) << avg_time_single_ms << " ms" << std::endl;
   std::cout << "QPS: " << std::scientific << qps_single << std::endl;
 
@@ -534,6 +535,7 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   std::cout << "\n=== Double Label Search Performance ===" << std::endl;
   std::cout << "Queries: " << n_double_queries << std::endl;
   std::cout << "iTopK: " << double_query_itopk_size << std::endl;
+  std::cout << "Specificity threshold: " << specificity_threshold << std::endl;
   std::cout << "Average time: " << std::fixed << avg_time_double_ms << " ms" << std::endl;
   std::cout << "QPS: " << std::scientific << qps_double << std::endl;
 
@@ -575,36 +577,20 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   compute_recall(h_neighbors.view(), gt_indices, valid_query_indices, n_single_queries, query_label_vecs);
 }
 
-auto load_data_bin(const std::string& file_path) -> std::tuple<std::vector<uint8_t>, int64_t, int64_t> {
-  std::ifstream file(file_path, std::ios::binary);
-  if (!file) {
-      throw std::runtime_error("Cannot open file: " + file_path);
-  }
-  uint32_t N, dim;
-  file.read(reinterpret_cast<char*>(&N), sizeof(uint32_t));
-  file.read(reinterpret_cast<char*>(&dim), sizeof(uint32_t));
-  
-  std::vector<uint8_t> data(N * dim);
-  for (uint32_t i = 0; i < N; i++) {
-      file.read(reinterpret_cast<char*>(data.data() + i * dim), dim * sizeof(uint8_t));
-  }
-  
-  return {data, N, dim};
-}
 
 int main(int argc, char** argv) {
   // Parse command line argument
-  int single_query_itopk_size = 32;  // Default value
+  int single_query_itopk_size = 64;  // Default value
   if (argc > 1) {
     single_query_itopk_size = std::stoi(argv[1]);
   }
-  int double_query_itopk_size = 128;  // Default value
+  int double_query_itopk_size = 64;  // Default value
   if (argc > 2) {
     double_query_itopk_size = std::stoi(argv[2]);
   }
-  int specificity_threshould = 2000;
+  int specificity_threshold = 2000;
   if (argc > 3) {
-    specificity_threshould = std::stoi(argv[3]);
+    specificity_threshold = std::stoi(argv[3]);
   }
 
   shared_resources::configured_raft_resources dev_resources{};
@@ -653,7 +639,7 @@ int main(int argc, char** argv) {
                                 query_freq,
                                 single_query_itopk_size,
                                 double_query_itopk_size,
-                                specificity_threshould);
+                                specificity_threshold);
   } catch (const std::exception& e) {
     std::cerr << "Fatal error: " << e.what() << std::endl;
     return 1;
