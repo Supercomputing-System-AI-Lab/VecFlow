@@ -33,6 +33,20 @@
 #include <thrust/iterator/counting_iterator.h>
 #include <ctime> 
 
+// Fill dataset and queries with synthetic data.
+void generate_dataset(raft::device_resources const &dev_resources,
+                      raft::device_matrix_view<float, int64_t> dataset,
+                      raft::device_matrix_view<float, int64_t> queries) {
+  auto labels = raft::make_device_vector<int64_t, int64_t>(dev_resources,
+                                                           dataset.extent(0));
+  raft::random::make_blobs(dev_resources, dataset, labels.view());
+  raft::random::RngState r(1234ULL);
+  raft::random::uniform(
+      dev_resources, r,
+      raft::make_device_vector_view(queries.data_handle(), queries.size()),
+      -1.0f, 1.0f);
+}
+
 template<typename T, typename idxT>
 void read_data(std::string data_fname, 
                        std::string query_fname, 
@@ -85,8 +99,6 @@ void read_gt_file(const std::string& gt_fname, std::vector<std::vector<uint32_t>
     gtfile.read(reinterpret_cast<char*>(&num_queries), sizeof(uint32_t));
     gtfile.read(reinterpret_cast<char*>(&gt_k), sizeof(uint32_t));
 
-    printf("N:%u, k:%u\n", num_queries, gt_k);
-
     gt_indices.resize(num_queries);
     for (uint32_t i = 0; i < num_queries; ++i) {
         gt_indices[i].resize(gt_k);
@@ -118,7 +130,6 @@ void read_labeled_data(std::string data_fname,
   datafile.read(reinterpret_cast<char*>(&N), sizeof(uint32_t));
   datafile.read(reinterpret_cast<char*>(&dim), sizeof(uint32_t));
   if (N > static_cast<uint32_t>(max_N)) N = max_N;
-  printf("N:%u, dim:%u\n", N, dim);
   data->resize(N*dim);
   datafile.read(reinterpret_cast<char*>(data->data()), N*dim*sizeof(T));
   datafile.close();
@@ -131,7 +142,6 @@ void read_labeled_data(std::string data_fname,
   uint32_t q_N, q_dim;
   queryfile.read(reinterpret_cast<char*>(&q_N), sizeof(uint32_t));
   queryfile.read(reinterpret_cast<char*>(&q_dim), sizeof(uint32_t));
-  printf("qN:%u, qdim:%u\n", q_N, q_dim);
   if (q_dim != dim) {
       throw std::runtime_error("Query dim and data dim don't match!");
   }
@@ -201,8 +211,6 @@ void read_labeled_data(std::string data_fname,
     }
     query_labels->push_back(std::move(label_list));
   }
-
-  printf("queries read. size:%zu\n", queries->size());
 }
 
 
