@@ -37,7 +37,6 @@
 using namespace cuvs::neighbors;
 
 struct CombinedIndices {
-  raft::device_matrix<uint32_t, int64_t> final_matrix;
   raft::device_vector<uint32_t, int64_t> index_map;
   raft::device_vector<uint32_t, int64_t> label_size;
   raft::device_vector<uint32_t, int64_t> label_offset;
@@ -72,8 +71,10 @@ void save_matrix_to_ibin(raft::resources const& res,
   file.close();
 }
 
-auto load_matrix_from_ibin(raft::resources const& res, const std::string& filename) 
-  -> raft::device_matrix<uint32_t, int64_t> {
+void load_matrix_from_ibin(raft::resources const& res, 
+                          const std::string& filename,
+                          const raft::device_matrix_view<uint32_t, int64_t>& graph) {  // Pass graph as reference
+  
   std::ifstream file(filename, std::ios::binary);
   if (!file) {
     throw std::runtime_error("Cannot open file: " + filename);
@@ -84,18 +85,20 @@ auto load_matrix_from_ibin(raft::resources const& res, const std::string& filena
   file.read(reinterpret_cast<char*>(&rows), sizeof(int64_t));
   file.read(reinterpret_cast<char*>(&cols), sizeof(int64_t));
 
+  // Verify dimensions match
+  if (rows != graph.extent(0) || cols != graph.extent(1)) {
+    throw std::runtime_error("File dimensions do not match pre-allocated graph dimensions");
+  }
+
   // Read data to host
   std::vector<uint32_t> h_matrix(rows * cols);
   file.read(reinterpret_cast<char*>(h_matrix.data()), rows * cols * sizeof(uint32_t));
   file.close();
 
-  // Create device matrix and copy data
-  auto d_matrix = raft::make_device_matrix<uint32_t, int64_t>(res, rows, cols);
-  raft::update_device(d_matrix.data_handle(), h_matrix.data(), rows * cols, 
+  // Copy data to pre-allocated device matrix
+  raft::update_device(graph.data_handle(), h_matrix.data(), rows * cols, 
                       raft::resource::get_cuda_stream(res));
   raft::resource::sync_stream(res);
-
-  return d_matrix;
 }
 
 auto load_and_combine_indices(raft::resources const& res, 
@@ -110,7 +113,6 @@ auto load_and_combine_indices(raft::resources const& res,
     
   // First pass: calculate total size and get graph width
   int64_t total_rows = 0;
-  int64_t graph_width = 16;
   int64_t total_data_labels = 0;
   for (uint32_t i = 0; i < label_number; i++) {
     if (query_freq[i] > 0) {
@@ -126,7 +128,6 @@ auto load_and_combine_indices(raft::resources const& res,
   std::cout << "Total data labels: " << total_data_labels << std::endl;
 
   // Create matrices and vectors
-  auto final_matrix = raft::make_device_matrix<uint32_t, int64_t>(res, total_rows, graph_width);
   auto index_map = raft::make_device_vector<uint32_t, int64_t>(res, total_rows);
   auto label_size = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
   auto label_offset = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
@@ -207,7 +208,6 @@ auto load_and_combine_indices(raft::resources const& res,
   raft::resource::sync_stream(res);
 
   return CombinedIndices{
-    std::move(final_matrix),
     std::move(index_map),
     std::move(label_size),
     std::move(label_offset),
@@ -218,25 +218,11 @@ auto load_and_combine_indices(raft::resources const& res,
   };
 }
 
-// A helper to measure the execution time of a function
-template <typename F, typename... Args>
-void time_it(std::string label, F f, Args &&...xs) {
-  auto start = std::chrono::system_clock::now();
-  f(std::forward<Args>(xs)...);
-  auto end = std::chrono::system_clock::now();
-  auto t = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-  auto t_ms = double(t.count()) / 1000.0;
-  std::cout << "[" << label << "] execution time: " << t_ms << " ms"
-            << std::endl;
-}
-
-
 void compute_recall(const raft::host_matrix_view<uint32_t, int64_t>& neighbors,
                     const std::vector<std::vector<uint32_t>>& gt_indices,
                     const std::vector<int64_t>& valid_query_indices,
                     int n_single_queries,
-                    const std::vector<std::vector<int>>& query_label_vecs)
-{
+                    const std::vector<std::vector<int>>& query_label_vecs) {
   int n_queries = neighbors.extent(0);
   int n_double_queries = n_queries - n_single_queries;
   int topk = neighbors.extent(1);
@@ -319,6 +305,16 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   auto distances = raft::make_device_matrix<float>(dev_resources, n_queries, topk);
 
   // Build index
+  int64_t total_rows = 0;
+  int64_t graph_width = 16;
+  for (uint32_t i = 0; i < label_data_vecs.size(); i++) {
+    if (query_freq[i] > 0) {
+      total_rows += label_data_vecs[i].size();
+    }
+  }
+  auto graph = raft::make_device_matrix<uint32_t, int64_t>(dev_resources, total_rows, graph_width);
+  raft::resource::sync_stream(dev_resources);
+
   std::cout << "Building CAGRA index (search graph)" << std::endl;
   std::string index_file = "/scratch/bdes/cmo1/CAGRA/indices_yfcc/index_32_16.bin";
   std::string graph_file = "/scratch/bdes/cmo1/CAGRA/indices_yfcc/graph_32_16.bin";
@@ -328,7 +324,7 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
     cagra::deserialize(dev_resources, index_file, &index);
     index.update_dataset(dev_resources, raft::make_const_mdspan(dataset));
     raft::resource::sync_stream(dev_resources);
-    auto graph = load_matrix_from_ibin(dev_resources, graph_file);
+    load_matrix_from_ibin(dev_resources, graph_file, graph.view());
     index.update_graph(dev_resources, raft::make_const_mdspan(graph.view()));
     test_file.close();
   } else {
