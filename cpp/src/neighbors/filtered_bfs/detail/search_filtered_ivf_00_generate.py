@@ -29,6 +29,7 @@ def generate_autogen_notice() -> str:
 
 def generate_includes() -> str:
     return '''#include <cuvs/neighbors/filtered_bfs.hpp>
+#include <cuvs/neighbors/common.hpp>
 
 #include "../search_filtered_ivf.cuh"'''
 
@@ -42,10 +43,11 @@ def generate_macro() -> str:
     raft::device_vector_view<uint32_t, int64_t> label_size, \\
     raft::device_matrix_view<idx_t, int64_t, raft::row_major> neighbors, \\
     raft::device_matrix_view<float, int64_t, raft::row_major> distances, \\
-    cuvs::distance::DistanceType metric) \\
+    cuvs::distance::DistanceType metric, \\
+    const cuvs::neighbors::filtering::base_filter& sample_filter_ref) \\
   { \\
     search_filtered_ivf_impl<idx_t, data_t>( \\
-      handle, idx, queries, query_labels, label_size, neighbors, distances, metric); \\
+      handle, idx, queries, query_labels, label_size, neighbors, distances, metric, sample_filter_ref); \\
   }'''
 
 def generate_file_content(idx_t: str, data_t: str) -> str:

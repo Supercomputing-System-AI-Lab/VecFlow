@@ -64,7 +64,9 @@ void search_filtered_ivf(raft::resources const& handle,
                         raft::device_vector_view<uint32_t, int64_t> label_size,
                         raft::device_matrix_view<int64_t, int64_t, raft::row_major> neighbors,
                         raft::device_matrix_view<float, int64_t, raft::row_major> distances,
-                        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded);
+                        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded,
+                        const cuvs::neighbors::filtering::base_filter& sample_filter =
+                          cuvs::neighbors::filtering::none_sample_filter{});
 
 void search_filtered_ivf(raft::resources const& handle,
                         cuvs::neighbors::ivf_flat::index<uint8_t, int64_t>& idx,
@@ -73,7 +75,9 @@ void search_filtered_ivf(raft::resources const& handle,
                         raft::device_vector_view<uint32_t, int64_t> label_size,
                         raft::device_matrix_view<int64_t, int64_t, raft::row_major> neighbors,
                         raft::device_matrix_view<float, int64_t, raft::row_major> distances,
-                        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded);
+                        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded,
+                        const cuvs::neighbors::filtering::base_filter& sample_filter =
+                          cuvs::neighbors::filtering::none_sample_filter{});
 
 void search_filtered_ivf(raft::resources const& handle,
                         cuvs::neighbors::ivf_flat::index<int8_t, int64_t>& idx,
@@ -82,7 +86,9 @@ void search_filtered_ivf(raft::resources const& handle,
                         raft::device_vector_view<uint32_t, int64_t> label_size,
                         raft::device_matrix_view<int64_t, int64_t, raft::row_major> neighbors,
                         raft::device_matrix_view<float, int64_t, raft::row_major> distances,
-                        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded);
+                        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded,
+                        const cuvs::neighbors::filtering::base_filter& sample_filter =
+                          cuvs::neighbors::filtering::none_sample_filter{});
 
 void search_filtered_ivf(raft::resources const& handle,
                         cuvs::neighbors::ivf_flat::index<half, int64_t>& idx,
@@ -91,6 +97,8 @@ void search_filtered_ivf(raft::resources const& handle,
                         raft::device_vector_view<uint32_t, int64_t> label_size,
                         raft::device_matrix_view<int64_t, int64_t, raft::row_major> neighbors,
                         raft::device_matrix_view<float, int64_t, raft::row_major> distances,
-                        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded);
+                        cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded,
+                        const cuvs::neighbors::filtering::base_filter& sample_filter =
+                          cuvs::neighbors::filtering::none_sample_filter{});
 
 }  // namespace cuvs::neighbors

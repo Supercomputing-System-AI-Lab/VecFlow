@@ -333,6 +333,11 @@ void filtered_bfs_build_search_variants(raft::resources const& dev_resources,
   }
   raft::resource::sync_stream(dev_resources);
 
+  auto filter = filtering::cagra_filter(combined_indices.data_labels.view(),
+                                        combined_indices.data_label_size.view(), 
+                                        combined_indices.data_label_offset.view(),
+                                        combined_indices.query_labels.view());
+
   // Prepare for search
   const int k = 10; 
   auto neighbors = raft::make_device_matrix<int64_t, int64_t>(dev_resources, n_queries, k);

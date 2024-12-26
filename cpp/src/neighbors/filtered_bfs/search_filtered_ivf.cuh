@@ -31,7 +31,7 @@ namespace cuvs::neighbors {
 
 namespace detail {
 
-template <typename idx_t, typename data_t>
+template <typename idx_t, typename data_t, typename FilterT>
 void search_filtered_ivf_core(
   raft::resources const& handle,
   cuvs::neighbors::ivf_flat::index<data_t, idx_t>& idx,
@@ -40,7 +40,8 @@ void search_filtered_ivf_core(
   raft::device_vector_view<uint32_t, int64_t> label_size,
   raft::device_matrix_view<idx_t, int64_t, raft::row_major> neighbors,
   raft::device_matrix_view<float, int64_t, raft::row_major> distances,
-  cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded)
+  cuvs::distance::DistanceType metric,
+  FilterT sample_filter)
 {
   int64_t  n_queries = queries.extent(0);
   uint32_t k         = static_cast<uint32_t>(neighbors.extent(1));
@@ -87,7 +88,7 @@ void search_filtered_ivf_core(
            0,
            chunk_index.data(),
            cuvs::distance::is_min_close(cuvs::distance::DistanceType(metric)),
-           cuvs::neighbors::filtering::none_sample_filter(),
+           sample_filter,
            neighbors_uint32,
            distances.data_handle(),
            grid_dim_x,
@@ -114,8 +115,28 @@ void search_filtered_ivf_impl(
   raft::device_vector_view<uint32_t, int64_t> label_size,
   raft::device_matrix_view<idx_t, int64_t, raft::row_major> neighbors,
   raft::device_matrix_view<float, int64_t, raft::row_major> distances,
-  cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded)
+  cuvs::distance::DistanceType metric,
+  const cuvs::neighbors::filtering::base_filter& sample_filter_ref)
 {
-  detail::search_filtered_ivf_core(handle, idx, queries, query_labels, label_size, neighbors, distances, metric);
+  try {
+    using none_filter_type = cuvs::neighbors::filtering::none_sample_filter;
+    auto& sample_filter = dynamic_cast<const none_filter_type&>(sample_filter_ref);
+    auto sample_filter_copy = sample_filter;
+    detail::search_filtered_ivf_core(
+      handle, idx, queries, query_labels, label_size, neighbors, distances, metric, sample_filter_copy);
+    return;
+  } catch (const std::bad_cast&) {
+  }
+
+  try {
+    auto& sample_filter = 
+      dynamic_cast<const cuvs::neighbors::filtering::cagra_filter&>(
+        sample_filter_ref);
+    auto sample_filter_copy = sample_filter;
+    detail::search_filtered_ivf_core(
+      handle, idx, queries, query_labels, label_size, neighbors, distances, metric, sample_filter_copy);
+  } catch (const std::bad_cast&) {
+    RAFT_FAIL("Unsupported sample filter type");
+  }
 }
 }  // namespace cuvs::neighbors
