@@ -51,7 +51,7 @@ For each file, modify:
 1. Dataset path
 2. Index file path
 
-### Building Index Files
+### Building Index Files (Index files are already included in Google Drive)
 
 Two separate build scripts are provided:
 
