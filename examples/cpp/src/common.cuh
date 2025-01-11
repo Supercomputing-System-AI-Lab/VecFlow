@@ -124,7 +124,7 @@ void read_labeled_data(std::string data_fname,
   // Read datafile in
   std::ifstream datafile(data_fname, std::ifstream::binary);
   if (!datafile) {
-      throw std::runtime_error("Unable to open data file: " + data_fname);
+    throw std::runtime_error("Unable to open data file: " + data_fname);
   }
   uint32_t N, dim;
   datafile.read(reinterpret_cast<char*>(&N), sizeof(uint32_t));
@@ -143,7 +143,7 @@ void read_labeled_data(std::string data_fname,
   queryfile.read(reinterpret_cast<char*>(&q_N), sizeof(uint32_t));
   queryfile.read(reinterpret_cast<char*>(&q_dim), sizeof(uint32_t));
   if (q_dim != dim) {
-      throw std::runtime_error("Query dim and data dim don't match!");
+    throw std::runtime_error("Query dim and data dim don't match!");
   }
   queries->resize(q_N*dim);
   queryfile.read(reinterpret_cast<char*>(queries->data()), q_N*dim*sizeof(T));
@@ -171,7 +171,7 @@ void read_labeled_data(std::string data_fname,
   data_labels->reserve(N);
   labels_data->reserve(ncol);
   labels_data->resize(ncol);
-  cat_freq->resize(ncol+1, 0);
+  cat_freq->resize(ncol, 0);
   for (uint32_t i = 0; i < N; ++i) {
     std::vector<int> label_list;
     for (int64_t j = indptr[i]; j < indptr[i+1]; ++j) {
@@ -181,7 +181,6 @@ void read_labeled_data(std::string data_fname,
     }
     data_labels->push_back(std::move(label_list));
   }
-  (*cat_freq)[ncol] = N;
 
   // read labels for queries
   std::ifstream qlabelfile(query_label_fname, std::ios::binary);
@@ -559,13 +558,13 @@ __global__ void copy_neighbors(raft::device_matrix_view<int64_t, int64_t> bf_nei
 
 
 __global__ void copy_bf_neighbors(raft::device_matrix_view<int64_t, int64_t> bf_neighbors, 
-                            raft::device_matrix_view<uint32_t, int64_t> neighbors,
+                            raft::device_matrix_view<int64_t, int64_t> neighbors,
                             raft::device_vector_view<int> matching_indices,
                             raft::device_vector_view<int> query_map,
                             int query_offset,
                             int bf_idx) {
   int i = threadIdx.x;
-  neighbors(query_offset+query_map(bf_idx), i) = (uint32_t)matching_indices(bf_neighbors(0, i));
+  neighbors(query_offset+query_map(bf_idx), i) = (int64_t)matching_indices(bf_neighbors(0, i));
 }
 
 __global__ void copy_refine_neighbors(raft::device_matrix_view<int64_t, int64_t> refine_neighbors, 
@@ -599,4 +598,23 @@ __global__ void c_neighbors(raft::device_matrix_view<int64_t, int64_t> bf_neighb
   neighbors(0, i) = (uint32_t)matching_indices[bf_neighbors(0, i)];
 }
 
+__global__ void convert_int64_to_uint32(const int64_t* input, uint32_t* output, int n) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        output[idx] = static_cast<uint32_t>(input[idx]);
+    }
+}
+
+void convert_neighbors_to_uint32(raft::resources const& res,
+                               const int64_t* input,
+                               uint32_t* output,
+                               int n_queries,
+                               int k) {
+  int total_elements = n_queries * k;
+  int block_size = 256;
+  int grid_size = (total_elements + block_size - 1) / block_size;
+  
+  convert_int64_to_uint32<<<grid_size, block_size, 0, raft::resource::get_cuda_stream(res)>>>(
+      input, output, total_elements);
+}
 
