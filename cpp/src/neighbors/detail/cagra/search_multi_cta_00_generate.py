@@ -74,6 +74,9 @@ for type_path, (data_t, idx_t, distance_t) in search_types.items():
                 f"instantiate_kernel_selection(\n  {data_t}, {idx_t}, {distance_t}, CagraSampleFilterWithQueryIdOffset<cuvs::neighbors::filtering::bitset_filter<uint32_t COMMA int64_t>>);\n"
         )
         f.write(
+                f"instantiate_kernel_selection(\n  {data_t}, {idx_t}, {distance_t}, CagraSampleFilterWithQueryIdOffset<cuvs::neighbors::filtering::bitmap_filter<const uint32_t COMMA int64_t>>);\n"
+        )
+        f.write(
                 f"instantiate_kernel_selection(\n  {data_t}, {idx_t}, {distance_t}, CagraSampleFilterWithQueryIdOffset<cuvs::neighbors::filtering::cagra_filter>);\n"
         )
         f.write(trailer)
