@@ -337,6 +337,35 @@ void compute_recall(const raft::host_matrix_view<uint32_t, int64_t>& neighbors,
   std::cout << "Results have been written to wiki1M_recall_results.csv" << std::endl;
 }
 
+__global__ void create_bitmap_filter_kernel(const int64_t* __restrict__ row_offsets,
+                                          const int64_t* __restrict__ indices,
+                                          const uint32_t* __restrict__ query_labels,
+                                          uint32_t* __restrict__ bitmap,
+                                          const int num_queries,
+                                          const int num_cols,
+                                          const int words_per_row) {
+    
+  const int query_idx = blockIdx.x;
+  if (query_idx >= num_queries) return;
+  
+  // Get start and end indices for this query's label
+  const int start = row_offsets[query_labels[query_idx]];
+  const int end = row_offsets[query_labels[query_idx] + 1];
+  
+  // Each thread handles one index
+  for (int i = threadIdx.x; i < (end - start); i += blockDim.x) {
+    const int idx = indices[start + i];
+    if (idx >= num_cols) continue;  // Add bounds check
+    
+    // Calculate position in bitmap
+    const int word_idx = query_idx * words_per_row + (idx / (sizeof(uint32_t) * 8));
+    const unsigned bit_offset = idx % (sizeof(uint32_t) * 8);
+    
+    // Set bit using atomic operation
+    atomicOr(&bitmap[word_idx], 1u << bit_offset);
+  }
+}
+
 void cagra_build_search_variants(shared_resources::configured_raft_resources& dev_resources,
                                 raft::device_matrix_view<const float, int64_t> dataset,
                                 raft::device_matrix_view<const float, int64_t> queries,
@@ -446,6 +475,7 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   std::vector<uint32_t> h_double_query_labels(n_double_queries*2);
   std::vector<uint32_t> h_ivf_query_labels(n_ivf_queries);
   std::vector<int64_t> h_double_filter_labels(n_double_queries*2);
+  std::vector<uint32_t> h_double_bitmap_labels(n_double_queries*2);
   std::vector<int64_t> h_ivf_filter_labels(n_ivf_queries);
   int current_double = 0;
   int current_ivf = 0;
@@ -460,8 +490,10 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
     } else {
       h_double_query_labels[current_double * 2] = label1;
       h_double_filter_labels[current_double * 2] = label2;
+      h_double_bitmap_labels[current_double * 2] = label2;
       h_double_query_labels[current_double * 2 + 1] = label2;
       h_double_filter_labels[current_double * 2 + 1] = label1;
+      h_double_bitmap_labels[current_double * 2 + 1] = label1;
       double_query_indices[current_double] = i;
       current_double++;
     }
@@ -472,6 +504,7 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   // Create filtered query labels vector
   auto double_query_labels = raft::make_device_vector<uint32_t, int64_t>(dev_resources, n_double_queries*2);
   auto double_filter_labels = raft::make_device_vector<int64_t, int64_t>(dev_resources, n_double_queries*2);
+  auto double_bitmap_labels = raft::make_device_vector<uint32_t, int64_t>(dev_resources, n_double_queries*2);
   auto ivf_query_labels    = raft::make_device_vector<uint32_t, int64_t>(dev_resources, n_ivf_queries);
   auto ivf_filter_labels    = raft::make_device_vector<int64_t, int64_t>(dev_resources, n_ivf_queries);
 
@@ -482,6 +515,11 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   raft::resource::sync_stream(dev_resources);
   raft::update_device(double_filter_labels.data_handle(),
                       h_double_filter_labels.data(),
+                      n_double_queries * 2,
+                      raft::resource::get_cuda_stream(dev_resources));
+  raft::resource::sync_stream(dev_resources);
+  raft::update_device(double_bitmap_labels.data_handle(),
+                      h_double_bitmap_labels.data(),
                       n_double_queries * 2,
                       raft::resource::get_cuda_stream(dev_resources));
   raft::resource::sync_stream(dev_resources);
@@ -527,6 +565,61 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
                                             ivf_filter_labels.view());
   raft::resource::sync_stream(dev_resources);
 
+  const int64_t bits_per_uint32 = sizeof(uint32_t) * 8;
+  const int64_t words_per_row = (dataset.extent(0) + bits_per_uint32 - 1) / bits_per_uint32;
+  auto bitmap = raft::make_device_matrix<uint32_t, int64_t>(
+      dev_resources, n_double_queries*2, words_per_row);
+                    
+  int64_t total_indices = 0;
+  for (const auto& vec : label_data_vecs) {
+    total_indices += vec.size();
+  }
+  // Create and fill row offsets
+  std::vector<int64_t> h_row_offsets(label_data_vecs.size() + 1, 0);
+  int64_t current_offset = 0;
+  for (size_t i = 0; i < label_data_vecs.size(); i++) {
+    h_row_offsets[i] = current_offset;
+    current_offset += label_data_vecs[i].size();
+  }
+  h_row_offsets[label_data_vecs.size()] = current_offset;
+  // Create indices array
+  std::vector<int64_t> h_indices(total_indices);
+  current_offset = 0;
+  for (const auto& vec : label_data_vecs) {
+    std::copy(vec.begin(), vec.end(), h_indices.begin() + current_offset);
+    current_offset += vec.size();
+  }
+  // Copy data to GPU
+  auto d_row_offsets = raft::make_device_vector<int64_t, int64_t>(dev_resources, h_row_offsets.size());
+  auto d_indices = raft::make_device_vector<int64_t, int64_t>(dev_resources, h_indices.size());
+  raft::update_device(d_row_offsets.data_handle(),
+                      h_row_offsets.data(),
+                      h_row_offsets.size(),
+                      raft::resource::get_cuda_stream(dev_resources));
+  raft::update_device(d_indices.data_handle(),
+                      h_indices.data(),
+                      h_indices.size(),
+                      raft::resource::get_cuda_stream(dev_resources));
+  // Zero initialize bitmap
+  // RAFT_CUDA_TRY(cudaMemsetAsync(
+  //     bitmap.data_handle(),
+  //     0,
+  //     n_double_queries*2 * words_per_row * sizeof(uint32_t),
+  //     raft::resource::get_cuda_stream(dev_resources)));
+  
+  int block_size = 256;
+  // create_bitmap_filter_kernel<<<n_double_queries*2, block_size, 0, raft::resource::get_cuda_stream(dev_resources)>>>(
+  //     d_row_offsets.data_handle(),
+  //     d_indices.data_handle(),
+  //     double_bitmap_labels.data_handle(),
+  //     bitmap.data_handle(),
+  //     n_double_queries*2,
+  //     dataset.extent(0),
+  //     words_per_row);
+  // raft::resource::sync_stream(dev_resources);
+  // auto bitmap_view = raft::core::bitmap_view<const uint32_t, int64_t>(
+  //     bitmap.data_handle(), n_double_queries*2, dataset.extent(0));
+  // auto bitmap_filter = filtering::bitmap_filter<const uint32_t, int64_t>(bitmap_view);
 
   // Resize result arrays for filtered queries
   auto double_query_neighbors = raft::make_device_matrix<uint32_t, int64_t>(dev_resources, n_double_queries*2, topk);
@@ -550,6 +643,35 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
                           combined_indices.label_size.view(),
                           combined_indices.label_offset.view(),
                           double_filter);
+    raft::resource::sync_stream(dev_resources);
+    RAFT_CUDA_TRY(cudaMemsetAsync(
+      bitmap.data_handle(),
+      0,
+      n_double_queries*2 * words_per_row * sizeof(uint32_t),
+      raft::resource::get_cuda_stream(dev_resources)));
+    create_bitmap_filter_kernel<<<n_double_queries*2, block_size, 0, raft::resource::get_cuda_stream(dev_resources)>>>(
+      d_row_offsets.data_handle(),
+      d_indices.data_handle(),
+      double_bitmap_labels.data_handle(),
+      bitmap.data_handle(),
+      n_double_queries*2,
+      dataset.extent(0),
+      words_per_row);
+    raft::resource::sync_stream(dev_resources);
+    auto bitmap_view = raft::core::bitmap_view<const uint32_t, int64_t>(
+        bitmap.data_handle(), n_double_queries*2, dataset.extent(0));
+    auto bitmap_filter = filtering::bitmap_filter<const uint32_t, int64_t>(bitmap_view);
+    cagra::filtered_search(dev_resources, 
+                          search_params,
+                          cagra_index,
+                          double_queries.view(),
+                          double_query_neighbors.view(),
+                          double_query_distances.view(),
+                          double_query_labels.view(),
+                          combined_indices.index_map.view(),
+                          combined_indices.label_size.view(),
+                          combined_indices.label_offset.view(),
+                          bitmap_filter);
     merge_search_results(topk,
                         n_double_queries,
                         double_query_distances.data_handle(),
@@ -572,6 +694,108 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   // For double label search:
   double total_time_double = 0;
   int num_runs = 100;
+  for (int run = 0; run < num_runs; run++) {
+    auto start = std::chrono::system_clock::now();
+    // cagra::filtered_search(dev_resources, 
+    //                       search_params,
+    //                       cagra_index,
+    //                       double_queries.view(),
+    //                       double_query_neighbors.view(),
+    //                       double_query_distances.view(),
+    //                       double_query_labels.view(),
+    //                       combined_indices.index_map.view(),
+    //                       combined_indices.label_size.view(),
+    //                       combined_indices.label_offset.view(),
+    //                       double_filter);
+    RAFT_CUDA_TRY(cudaMemsetAsync(
+      bitmap.data_handle(),
+      0,
+      n_double_queries*2 * words_per_row * sizeof(uint32_t),
+      raft::resource::get_cuda_stream(dev_resources)));
+    create_bitmap_filter_kernel<<<n_double_queries*2, block_size, 0, raft::resource::get_cuda_stream(dev_resources)>>>(
+      d_row_offsets.data_handle(),
+      d_indices.data_handle(),
+      double_bitmap_labels.data_handle(),
+      bitmap.data_handle(),
+      n_double_queries*2,
+      dataset.extent(0),
+      words_per_row);
+    raft::resource::sync_stream(dev_resources);
+    auto bitmap_view = raft::core::bitmap_view<const uint32_t, int64_t>(
+        bitmap.data_handle(), n_double_queries*2, dataset.extent(0));
+    auto bitmap_filter = filtering::bitmap_filter<const uint32_t, int64_t>(bitmap_view);
+    cagra::filtered_search(dev_resources, 
+                          search_params,
+                          cagra_index,
+                          double_queries.view(),
+                          double_query_neighbors.view(),
+                          double_query_distances.view(),
+                          double_query_labels.view(),
+                          combined_indices.index_map.view(),
+                          combined_indices.label_size.view(),
+                          combined_indices.label_offset.view(),
+                          bitmap_filter);
+    merge_search_results(topk,
+                        n_double_queries,
+                        double_query_distances.data_handle(),
+                        double_query_neighbors.data_handle(),
+                        double_query_final_distances.data_handle(),
+                        double_query_final_neighbors.data_handle(),
+                        raft::resource::get_cuda_stream(dev_resources));
+    raft::resource::sync_stream(dev_resources);
+    auto end = std::chrono::system_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    total_time_double += duration.count() / 1000.0;
+  }
+
+  double avg_time_double_ms = total_time_double / num_runs;
+  double qps_double = (n_double_queries * 1000.0) / avg_time_double_ms;
+  std::cout << "\n=== CAGRA Double Label Bitmap Search Performance ===" << std::endl;
+  std::cout << "Queries: " << n_double_queries << std::endl;
+  std::cout << "iTopK: " << itopk_size << std::endl;
+  std::cout << "Specificity threshold: " << specificity_threshold << std::endl;
+  std::cout << "Average time: " << std::fixed << avg_time_double_ms << " ms" << std::endl;
+  std::cout << "QPS: " << std::scientific << qps_double << std::endl;
+
+
+  // For bitmap construction timing
+  double total_bitmap_time = 0;
+  for (int run = 0; run < num_runs; run++) {
+    auto bitmap_start = std::chrono::system_clock::now();
+    // Reset bitmap
+    RAFT_CUDA_TRY(cudaMemsetAsync(
+        bitmap.data_handle(),
+        0,
+        n_double_queries*2 * words_per_row * sizeof(uint32_t),
+        raft::resource::get_cuda_stream(dev_resources)));
+        
+    // Create bitmap
+    create_bitmap_filter_kernel<<<n_double_queries*2, block_size, 0, 
+        raft::resource::get_cuda_stream(dev_resources)>>>(
+        d_row_offsets.data_handle(),
+        d_indices.data_handle(),
+        double_bitmap_labels.data_handle(),
+        bitmap.data_handle(),
+        n_double_queries*2,
+        dataset.extent(0),
+        words_per_row);
+    raft::resource::sync_stream(dev_resources);
+    
+    auto bitmap_end = std::chrono::system_clock::now();
+    auto bitmap_duration = std::chrono::duration_cast<std::chrono::microseconds>(bitmap_end - bitmap_start);
+    total_bitmap_time += bitmap_duration.count() / 1000.0;  // Convert to milliseconds
+  }
+  double avg_bitmap_time_ms = total_bitmap_time / num_runs;
+  // Print bitmap construction statistics
+  std::cout << "\n=== Bitmap Construction Performance ===" << std::endl;
+  std::cout << "Number of queries: " << n_double_queries*2 << std::endl;
+  std::cout << "Words per row: " << words_per_row << std::endl;
+  std::cout << "Bitmap size: " << (n_double_queries*2 * words_per_row * sizeof(uint32_t) / (1024.0 * 1024.0)) << " MB" << std::endl;
+  std::cout << "Average construction time: " << std::fixed << std::setprecision(3) << avg_bitmap_time_ms << " ms" << std::endl;
+
+   // For double label search:
+  total_time_double = 0;
+  num_runs = 100;
   for (int run = 0; run < num_runs; run++) {
     auto start = std::chrono::system_clock::now();
     cagra::filtered_search(dev_resources, 
@@ -598,9 +822,9 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
     total_time_double += duration.count() / 1000.0;
   }
 
-  double avg_time_double_ms = total_time_double / num_runs;
-  double qps_double = (n_double_queries * 1000.0) / avg_time_double_ms;
-  std::cout << "\n=== CAGRA Double Label Search Performance ===" << std::endl;
+  avg_time_double_ms = total_time_double / num_runs;
+  qps_double = (n_double_queries * 1000.0) / avg_time_double_ms;
+  std::cout << "\n=== CAGRA Double Label Predicate Search Performance ===" << std::endl;
   std::cout << "Queries: " << n_double_queries << std::endl;
   std::cout << "iTopK: " << itopk_size << std::endl;
   std::cout << "Specificity threshold: " << specificity_threshold << std::endl;
@@ -723,7 +947,7 @@ void cagra_build_search_variants(shared_resources::configured_raft_resources& de
   raft::copy(h_neighbors.data_handle(), final_neighbors.data_handle(), final_neighbors.size(), raft::resource::get_cuda_stream(dev_resources));
   raft::resource::sync_stream(dev_resources);
   // Read ground truth neighbors
-  std::string gt_fname = "/scratch/bdes/cmo1/CAGRA/dataset/wiki1M/wiki.GT.ibin";
+  std::string gt_fname = "/scratch/bdes/cmo1/CAGRA/dataset/wiki1M/wiki.GT.filtered.ibin";
   std::vector<std::vector<uint32_t>> gt_indices;
   read_ground_true_file(gt_fname, gt_indices);
   compute_recall(h_neighbors.view(), gt_indices, valid_query_indices, n_double_queries, query_label_vecs);
@@ -754,8 +978,8 @@ int main(int argc, char** argv) {
 
   std::string data_fname = "/scratch/bdes/cmo1/CAGRA/dataset/wiki1M/wiki.base.bin";
   std::string data_label_fname = "/scratch/bdes/cmo1/CAGRA/dataset/wiki1M/wiki.base.spmat";
-  std::string query_fname = "/scratch/bdes/cmo1/CAGRA/dataset/wiki1M/wiki.query.bin";
-  std::string query_label_fname = "/scratch/bdes/cmo1/CAGRA/dataset/wiki1M/wiki.query.spmat";
+  std::string query_fname = "/scratch/bdes/cmo1/CAGRA/dataset/wiki1M/wiki.query.filtered.bin";
+  std::string query_label_fname = "/scratch/bdes/cmo1/CAGRA/dataset/wiki1M/wiki.query.filtered.spmat";
 
   std::vector<float> h_data;
   std::vector<float> h_queries;
