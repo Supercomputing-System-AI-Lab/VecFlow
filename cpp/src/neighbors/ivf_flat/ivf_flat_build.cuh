@@ -168,6 +168,65 @@ RAFT_KERNEL build_index_kernel(const LabelT* labels,
   }
 }
 
+template <typename T, typename IdxT>
+RAFT_KERNEL build_variable_size_kernel(
+  const T* dataset,
+  const uint32_t* index_map,
+  const uint32_t* label_offset,
+  T** list_data_ptrs,
+  IdxT** list_index_ptrs,
+  uint32_t* list_sizes_ptr,
+  IdxT n_total_points,
+  uint32_t n_lists,
+  uint32_t dim,
+  uint32_t veclen) 
+{
+  const IdxT i = IdxT(blockDim.x) * IdxT(blockIdx.x) + threadIdx.x;
+  if (i >= n_total_points) { return; }
+
+  // Get source index
+  auto source_ix = index_map[i];
+  
+  // Binary search to find list_id
+  uint32_t left = 0;
+  uint32_t right = n_lists;
+  uint32_t list_id = 0;
+  
+  while (left < right - 1) {
+    uint32_t mid = (left + right) / 2;
+    if (i < label_offset[mid]) {
+      right = mid;
+    } else {
+      left = mid;
+    }
+  }
+  list_id = left;
+
+  // Get position and pointers
+  auto inlist_id = atomicAdd(list_sizes_ptr + list_id, 1);
+  auto* list_index = list_index_ptrs[list_id];
+  auto* list_data = list_data_ptrs[list_id];
+
+  // Store index
+  list_index[inlist_id] = source_ix;
+
+  // Handle interleaved data storage with vectorization
+  using interleaved_group = raft::Pow2<kIndexGroupSize>;
+  auto group_offset = interleaved_group::roundDown(inlist_id);
+  auto ingroup_id = interleaved_group::mod(inlist_id) * veclen;
+
+  // Point to correct data locations
+  list_data += group_offset * dim;
+  const T* source_vec = dataset + source_ix * dim;
+
+  // Write data in interleaved format with vectorization
+  for (uint32_t l = 0; l < dim; l += veclen) {
+    for (uint32_t j = 0; j < veclen; j++) {
+      list_data[l * kIndexGroupSize + ingroup_id + j] = source_vec[l + j];
+    }
+  }
+}
+
 /** See raft::neighbors::ivf_flat::extend docs */
 template <typename T, typename IdxT>
 void extend(raft::resources const& handle,
@@ -520,6 +579,68 @@ inline void fill_refinement_index(raft::resources const& handle,
                                          n_queries * n_candidates,
                                          refinement_index->dim(),
                                          refinement_index->veclen());
+  RAFT_CUDA_TRY(cudaPeekAtLastError());
+}
+
+template <typename T, typename IdxT>
+inline void fill_variable_size_index(
+  raft::resources const& handle,
+  index<T, IdxT>* filtered_index,
+  raft::device_matrix_view<const T, int64_t, raft::row_major> dataset,
+  raft::device_vector_view<uint32_t, int64_t> index_map,
+  raft::device_vector_view<uint32_t, int64_t> label_size,
+  raft::device_vector_view<uint32_t, int64_t> label_offset) 
+{
+  auto stream = raft::resource::get_cuda_stream(handle);
+  uint32_t n_lists = label_size.size();
+  uint32_t dim = dataset.extent(1);
+
+  // Verify sizes before proceeding
+  std::vector<uint32_t> h_label_size(n_lists);
+  std::vector<uint32_t> h_label_offset(n_lists);
+  raft::copy(h_label_size.data(), label_size.data_handle(), n_lists, stream);
+  raft::copy(h_label_offset.data(), label_offset.data_handle(), n_lists, stream);
+  raft::resource::sync_stream(handle);
+
+  // Allocate lists
+  auto& lists = filtered_index->lists();
+  cuvs::neighbors::ivf_flat::list_spec<uint32_t, T, IdxT> list_device_spec{filtered_index->dim(), false};
+  
+  // Resize lists with proper padding
+  for (uint32_t label = 0; label < n_lists; label++) {
+    uint32_t padded_size = raft::ceildiv<uint32_t>(h_label_size[label], 32) * 32;
+    cuvs::neighbors::ivf::resize_list(
+      handle, 
+      lists[label], 
+      list_device_spec, 
+      h_label_size[label],
+      padded_size);  // Ensure proper padding
+  }
+
+  // Update internal state
+  cuvs::neighbors::ivf::detail::recompute_internal_state(handle, *filtered_index);
+
+  // Reset list sizes
+  auto list_sizes_ptr = filtered_index->list_sizes().data_handle();
+  RAFT_CUDA_TRY(cudaMemsetAsync(list_sizes_ptr, 0, n_lists * sizeof(uint32_t), stream));
+
+  // Launch kernel
+  const dim3 block_dim(256);
+  const dim3 grid_dim(raft::ceildiv<IdxT>(index_map.size(), block_dim.x));
+
+  build_variable_size_kernel<T, IdxT>
+    <<<grid_dim, block_dim, 0, stream>>>(
+      dataset.data_handle(),
+      index_map.data_handle(),
+      label_offset.data_handle(),
+      filtered_index->data_ptrs().data_handle(),
+      filtered_index->inds_ptrs().data_handle(),
+      list_sizes_ptr,
+      index_map.size(),
+      n_lists,
+      dim,
+      filtered_index->veclen());
+
   RAFT_CUDA_TRY(cudaPeekAtLastError());
 }
 

@@ -472,6 +472,62 @@ struct bitset_filter : public base_filter {
 };
 
 /**
+ * @brief Filter an index with data labels
+ */
+struct cagra_filter : public base_filter {
+  // Views of the data
+  raft::device_vector_view<uint32_t, int64_t> data_labels_;
+  raft::device_vector_view<uint32_t, int64_t> data_label_size_;
+  raft::device_vector_view<uint32_t, int64_t> data_label_offset_;
+  raft::device_vector_view<int64_t, int64_t> query_labels_;
+
+  cagra_filter(raft::device_vector_view<uint32_t, int64_t> data_labels,
+               raft::device_vector_view<uint32_t, int64_t> data_label_size,
+               raft::device_vector_view<uint32_t, int64_t> data_label_offset,
+               raft::device_vector_view<int64_t, int64_t> query_labels);
+
+  inline _RAFT_HOST_DEVICE bool operator()(
+    const uint32_t query_ix,
+    const uint32_t sample_ix) const;
+};
+
+inline cagra_filter::cagra_filter(
+    raft::device_vector_view<uint32_t, int64_t> data_labels,
+    raft::device_vector_view<uint32_t, int64_t> data_label_size,
+    raft::device_vector_view<uint32_t, int64_t> data_label_offset,
+    raft::device_vector_view<int64_t, int64_t> query_labels)
+    : data_labels_{data_labels},
+      data_label_size_{data_label_size},
+      data_label_offset_{data_label_offset},
+      query_labels_{query_labels}
+{
+}
+
+inline _RAFT_HOST_DEVICE bool cagra_filter::operator()(
+  const uint32_t query_ix,
+  const uint32_t sample_ix) const 
+{
+  auto query_label = query_labels_[query_ix];
+  if (query_label == -1) return true;
+
+  uint32_t left = data_label_offset_[sample_ix];;
+  uint32_t right = left + data_label_size_[sample_ix] - 1;
+  while (left <= right) {
+    uint32_t mid = left + (right - left) / 2;
+    uint32_t mid_val = data_labels_[mid];
+    if (mid_val == query_label) {
+      return true;
+    }
+    if (mid_val < query_label) {
+      left = mid + 1;
+    } else {
+      right = mid - 1;
+    }
+  }
+  return false;
+}
+
+/**
  * If the filtering depends on the index of a sample, then the following
  * filter template can be used:
  *

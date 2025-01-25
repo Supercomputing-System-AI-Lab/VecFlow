@@ -768,7 +768,7 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
       batched_memcpy(outputVals, ldOV, output_values_storage.data(), topK, topK, sizeBatch, stream);
     }
   }
-
+  using base_type::operator();
   void operator()(raft::resources const& res,
                   raft::device_matrix_view<const INDEX_T, int64_t, raft::row_major> graph,
                   INDEX_T* const topk_indices_ptr,       // [num_queries, topk]

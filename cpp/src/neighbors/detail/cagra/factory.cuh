@@ -21,7 +21,7 @@
 #include "search_multi_kernel.cuh"
 #include "search_plan.cuh"
 #include "search_single_cta.cuh"
-
+#include "filtered_search_single_cta.cuh"
 #include <cuvs/neighbors/common.hpp>
 
 namespace cuvs::neighbors::cagra::detail {
@@ -53,7 +53,11 @@ class factory {
                   search_plan_impl_base& plan,
                   const dataset_descriptor_host<DataT, IndexT, DistanceT>& dataset_desc)
   {
-    if (plan.algo == search_algo::SINGLE_CTA) {
+    if (plan.algo == search_algo::SINGLE_CTA_FILTERED) {
+      return std::make_unique<
+        filtered_single_cta_search::search<DataT, IndexT, DistanceT, CagraSampleFilterT>>(
+        res, plan, dataset_desc, plan.dim, plan.graph_degree, plan.topk);
+    } else if (plan.algo == search_algo::SINGLE_CTA) {
       return std::make_unique<
         single_cta_search::search<DataT, IndexT, DistanceT, CagraSampleFilterT>>(
         res, plan, dataset_desc, plan.dim, plan.graph_degree, plan.topk);
