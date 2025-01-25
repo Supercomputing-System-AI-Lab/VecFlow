@@ -58,7 +58,7 @@ void save_matrix_to_ibin(const std::string& filename,
   file.write(reinterpret_cast<const char*>(matrix.data_handle()), rows * cols * sizeof(uint32_t));
   file.close();
 
-  std::cout << "\nSaving graph to " << filename << std::endl;
+  std::cout << "Saving graph to " << filename << std::endl;
 }
 
 template<typename T>
@@ -116,6 +116,8 @@ void build_graphs(shared_resources::configured_raft_resources& dev_resources,
     std::cout << "Total labels: " << cagra_labels << std::endl;
     std::cout << "Total rows: " << cagra_total_rows << std::endl;
     std::cout << "Specificity threshold: " << specificity_threshold << std::endl;
+
+    auto cagra_start_time = std::chrono::high_resolution_clock::now();
 
     int optimal_threads = 32;
     omp_set_num_threads(optimal_threads);
@@ -177,14 +179,22 @@ void build_graphs(shared_resources::configured_raft_resources& dev_resources,
                 thread_stream);
       raft::resource::sync_stream(thread_resources);
     }
+
+    auto cagra_end_time = std::chrono::high_resolution_clock::now();
+    auto cagra_duration = std::chrono::duration_cast<std::chrono::milliseconds>(cagra_end_time - cagra_start_time);
+    std::cout << "\nIVF-CAGRA graph building time: " << cagra_duration.count() / 1000.0 << " seconds" << std::endl;
+
     if (!graph_fname.empty()) save_matrix_to_ibin(graph_fname, host_final_graph.view());
   }
 
   if (bfs_labels > 0) {
-    std::cout << "Building IVF-BFS graphs ..." << std::endl;
+    std::cout << "\nBuilding IVF-BFS graphs ..." << std::endl;
     std::cout << "Total labels: " << bfs_labels << std::endl;
     std::cout << "Total rows: " << bfs_total_rows << std::endl;
     std::cout << "Specificity threshold: " << specificity_threshold << std::endl;
+
+    auto bfs_start_time = std::chrono::high_resolution_clock::now();
+
     ivf_flat::index<T, int64_t> bfs_index(dev_resources,
                                           cuvs::distance::DistanceType::L2Unexpanded,
                                           label_data_vecs.size(),
@@ -214,9 +224,14 @@ void build_graphs(shared_resources::configured_raft_resources& dev_resources,
                             index_map.view(),
                             label_size.view(),
                             label_offset.view());
+    
+    auto bfs_end_time = std::chrono::high_resolution_clock::now();
+    auto bfs_duration = std::chrono::duration_cast<std::chrono::milliseconds>(bfs_end_time - bfs_start_time);
+    std::cout << "IVF-BFS graph building time: " << bfs_duration.count() << " ms" << std::endl;
+
     if (!bfs_fname.empty()) {
       ivf_flat::serialize(dev_resources, bfs_fname, bfs_index);
-       std::cout << "\nSaving IVF-BFS index to " << bfs_fname << std::endl;
+       std::cout << "Saving IVF-BFS index to " << bfs_fname << std::endl;
     }
   }
 }
@@ -236,16 +251,16 @@ int main(int argc, char** argv) {
   shared_resources::configured_raft_resources dev_resources{};
   cudaStream_t stream = raft::resource::get_cuda_stream(dev_resources);
 
-  std::string data_fname = "workspace/CAGRA/sift1M//sift.base.fbin";
-  std::string data_label_fname = "workspace/CAGRA/sift1M/sift.base.spmat";
-  std::string query_fname = "workspace/CAGRA/sift1M/sift.query.fbin";
-  std::string query_label_fname = "workspace/CAGRA/sift1M/sift.query.spmat";
+  std::string data_fname = "workspace/sift.base.fbin";
+  std::string data_label_fname = "workspace/sift.base.spmat";
+  std::string query_fname = "workspace/sift.query.fbin";
+  std::string query_label_fname = "workspace/sift.query.spmat";
   
-  std::string graph_fname = "workspace/CAGRA/sift1M/graph_"+ 
+  std::string graph_fname = "workspace/graph_"+ 
                           std::to_string(graph_degree * 2) + "_" + 
                           std::to_string(graph_degree) + "_spec_" +
                           std::to_string(specificity_threshold) + ".bin";
-  std::string bfs_fname = "workspace/CAGRA/sift1M/spec_"+ 
+  std::string bfs_fname = "workspace/spec_"+ 
                           std::to_string(specificity_threshold) + ".bin";
 
   std::vector<float> h_data;
