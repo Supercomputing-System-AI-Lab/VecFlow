@@ -312,7 +312,7 @@ RAFT_DEVICE_INLINE_FUNCTION void filtered_compute_distance_to_child_nodes(
     IndexT child_id             = invalid_index;
     if (smem_parent_id != invalid_index) {
       const auto parent_id = internal_topk_list[smem_parent_id] & ~index_msb_1_mask;
-      child_id             = knn_graph[(i % knn_k) + (static_cast<int64_t>(knn_k) * parent_id) + label_offset*knn_k];
+      child_id             = knn_graph[(i % knn_k) + (static_cast<int64_t>(knn_k) * parent_id) + (static_cast<int64_t>(label_offset) * knn_k)];
     }
     if (child_id != invalid_index) {
       if (hashmap::insert(visited_hashmap_ptr, hash_bitlen, child_id) == 0) {
