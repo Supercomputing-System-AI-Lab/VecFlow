@@ -195,25 +195,28 @@ void read_ground_truth_file(const std::string& fname, std::vector<std::vector<ui
 	}
 }
 
-void compute_recall(const raft::host_matrix_view<uint32_t, int64_t>& neighbors,
-                    const std::vector<std::vector<uint32_t>>& gt_indices,
-                    const std::vector<int64_t>& valid_query_indices) {
+void compute_recall(const raft::resources& res,
+										raft::device_matrix_view<uint32_t, int64_t> neighbors,
+                    const std::vector<std::vector<uint32_t>>& gt_indices) {
 	
   int n_queries = neighbors.extent(0);
   int topk = neighbors.extent(1);
+	auto h_neighbors = raft::make_host_matrix<uint32_t, int64_t>(n_queries, topk);
+	raft::copy(h_neighbors.data_handle(),
+						 neighbors.data_handle(),
+						 n_queries * topk,
+						 raft::resource::get_cuda_stream(res));
   float total_recall = 0.0f;
 
   for (int i = 0; i < n_queries; i++) {
     int matches = 0;
-    auto gt_idx = valid_query_indices[i];
-    
     // Count matches between found and ground truth neighbors
     for (int j = 0; j < topk; j++) {
-      uint32_t neighbor_idx = neighbors(i, j);
-      if (std::find(gt_indices[gt_idx].begin(), 
-                  gt_indices[gt_idx].begin() + topk, 
+      uint32_t neighbor_idx = h_neighbors.view()(i, j);
+      if (std::find(gt_indices[i].begin(), 
+                  gt_indices[i].begin() + topk, 
                   neighbor_idx) != 
-        gt_indices[gt_idx].begin() + topk) {
+        gt_indices[i].begin() + topk) {
         matches++;
       }
     }
@@ -221,9 +224,8 @@ void compute_recall(const raft::host_matrix_view<uint32_t, int64_t>& neighbors,
     float recall = static_cast<float>(matches) / topk;
     total_recall += recall;
   }
-
   // Print summary statistics
-  std::cout << "\n=== Recall Analysis ===" << std::endl;
   std::cout << "Overall recall (" << n_queries << " queries): " 
-            << std::fixed << total_recall / n_queries << std::endl;
+          << std::fixed << std::setprecision(6) 
+          << total_recall / n_queries << std::endl;
 }
