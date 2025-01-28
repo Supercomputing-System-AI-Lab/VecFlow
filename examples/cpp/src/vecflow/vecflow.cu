@@ -44,7 +44,7 @@ struct CombinedIndices {
   raft::device_vector<uint32_t, int64_t> cagra_label_size;
   raft::device_vector<uint32_t, int64_t> cagra_label_offset;
   raft::device_vector<uint32_t, int64_t> bfs_label_size;
-  std::vector<int> cat_freq;
+  raft::device_vector<uint32_t, int64_t> cat_freq;
 };
 
 void save_matrix_to_ibin(const std::string& filename, 
@@ -119,7 +119,9 @@ auto build_load_graphs(shared_resources::configured_raft_resources& res,
   std::vector<uint32_t> host_cagra_label_offset(label_number);
   std::vector<uint32_t> host_bfs_label_size(label_number);
   std::vector<uint32_t> host_bfs_label_offset(label_number);
+  std::vector<uint32_t> host_cat_freq(label_number);
   for (uint32_t i = 0; i < label_number; i++) {
+    host_cat_freq[i] = cat_freq[i];
     auto n_rows = label_data_vecs[i].size();
     if (cat_freq[i] > specificity_threshold) {
       host_cagra_label_size[i] = n_rows;
@@ -161,6 +163,7 @@ auto build_load_graphs(shared_resources::configured_raft_resources& res,
   auto cagra_label_size = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
   auto cagra_label_offset = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
   auto bfs_label_size = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
+  auto d_cat_freq = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
 
   raft::update_device(cagra_label_size.data_handle(), 
                       host_cagra_label_size.data(), 
@@ -176,6 +179,10 @@ auto build_load_graphs(shared_resources::configured_raft_resources& res,
                       raft::resource::get_cuda_stream(res));
   raft::update_device(bfs_label_size.data_handle(), 
                       host_bfs_label_size.data(), 
+                      label_number,
+                      raft::resource::get_cuda_stream(res));
+  raft::update_device(d_cat_freq.data_handle(), 
+                      host_cat_freq.data(), 
                       label_number,
                       raft::resource::get_cuda_stream(res));
   raft::resource::sync_stream(res);
@@ -313,7 +320,7 @@ auto build_load_graphs(shared_resources::configured_raft_resources& res,
     std::move(cagra_label_size),
     std::move(cagra_label_offset),
     std::move(bfs_label_size),
-    std::move(cat_freq)
+    std::move(d_cat_freq)
   };
 }
 
@@ -331,66 +338,27 @@ void search_main(shared_resources::configured_raft_resources& res,
 
   // Configure standard search parameters
   search_params.algo = cagra::search_algo::SINGLE_CTA_FILTERED;
-
+  
   int n_queries = queries.extent(0);
-  int dim = queries.extent(1);
-
-  int n_cagra_queries = 0;
-  int n_bfs_queries = 0;
+  auto query_labels = raft::make_device_vector<uint32_t, int64_t>(res, n_queries);
+  std::vector<uint32_t> host_query_labels(n_queries);
   for (int i = 0; i < n_queries; i++) {
-    int label = query_label_vecs[i][0];
-    if (metadata.cat_freq[label] > specificity_threshold) n_cagra_queries++;
-    else n_bfs_queries++;
+    host_query_labels[i] = query_label_vecs[i][0];
   }
+  raft::update_device(query_labels.data_handle(),
+                      host_query_labels.data(),
+                      n_queries,
+                      raft::resource::get_cuda_stream(res));
 
-  std::vector<int64_t> cagra_indices(n_cagra_queries);
-  std::vector<uint32_t> host_cagra_query_labels(n_cagra_queries);
-  std::vector<int64_t> bfs_indices(n_bfs_queries);
-  std::vector<uint32_t> host_bfs_query_labels(n_bfs_queries);
-  int cagra_iter = 0;
-  int bfs_iter = 0;
-  for (int i = 0; i < n_queries; i++) {
-    int label = query_label_vecs[i][0];
-    if (metadata.cat_freq[label] > specificity_threshold) {
-      cagra_indices[cagra_iter] = i;
-      host_cagra_query_labels[cagra_iter] = label;
-      cagra_iter++;
-    }
-    else {
-      bfs_indices[bfs_iter] = i;
-      host_bfs_query_labels[bfs_iter] = label;
-      bfs_iter++;
-    }
-  }
-  
-  auto cagra_queries = raft::make_device_matrix<T, int64_t>(res, n_cagra_queries, dim);
-  auto bfs_queries = raft::make_device_matrix<T, int64_t>(res, n_bfs_queries, dim);
-  auto cagra_query_labels = raft::make_device_vector<uint32_t, int64_t>(res, n_cagra_queries);
-  auto bfs_query_labels = raft::make_device_vector<uint32_t, int64_t>(res, n_bfs_queries);
-  
-  for (int64_t i = 0; i < n_cagra_queries; i++) {
-    raft::copy_async(cagra_queries.data_handle() + i * dim,
-                    queries.data_handle() + cagra_indices[i] * dim,
-                    dim,
-                    raft::resource::get_cuda_stream(res));
-  }
-  for (int64_t i = 0; i < n_bfs_queries; i++) {
-    raft::copy_async(bfs_queries.data_handle() + i * dim,
-                    queries.data_handle() + bfs_indices[i] * dim,
-                    dim,
-                    raft::resource::get_cuda_stream(res));
-  }
-  raft::update_device(cagra_query_labels.data_handle(),
-                      host_cagra_query_labels.data(),
-                      n_cagra_queries,
-                      raft::resource::get_cuda_stream(res));
-  raft::update_device(bfs_query_labels.data_handle(),
-                      host_bfs_query_labels.data(),
-                      n_bfs_queries,
-                      raft::resource::get_cuda_stream(res));
-  raft::resource::sync_stream(res);
+  auto query_info = classify_queries<T>(res,
+                                        queries,
+                                        query_labels.view(),
+                                        metadata.cat_freq.view(),
+                                        specificity_threshold);
 
   int64_t topk = 10;
+  int n_cagra_queries = query_info.cagra_query_map.size();
+  int n_bfs_queries = query_info.bfs_query_map.size();
   auto cagra_neighbors = raft::make_device_matrix<uint32_t, int64_t>(res, n_cagra_queries, topk);
   auto cagra_distances = raft::make_device_matrix<float, int64_t>(res, n_cagra_queries, topk);
   auto bfs_neighbors = raft::make_device_matrix<int64_t, int64_t>(res, n_bfs_queries, topk);
@@ -401,55 +369,37 @@ void search_main(shared_resources::configured_raft_resources& res,
     cagra::filtered_search(res, 
                           search_params,
                           cagra_index,
-                          cagra_queries.view(),
+                          query_info.cagra_queries.view(),
                           cagra_neighbors.view(),
                           cagra_distances.view(),
-                          cagra_query_labels.view(),
+                          query_info.cagra_query_labels.view(),
                           metadata.cagra_index_map.view(),
                           metadata.cagra_label_size.view(),
                           metadata.cagra_label_offset.view());
-    raft::resource::sync_stream(res);
-    for (int64_t i = 0; i < n_cagra_queries; i++) {
-      raft::copy_async(neighbors.data_handle() + cagra_indices[i] * topk,
-                      cagra_neighbors.data_handle() + i * topk,
-                      topk,
-                      raft::resource::get_cuda_stream(res));
-      raft::copy_async(distances.data_handle() + cagra_indices[i] * topk,
-                      cagra_distances.data_handle() + i * topk,
-                      topk,
-                      raft::resource::get_cuda_stream(res));
-    }
     raft::resource::sync_stream(res);
   }
 
   if (n_bfs_queries > 0) {
     search_filtered_ivf(res,
                       bfs_index,
-                      raft::make_const_mdspan(bfs_queries.view()),
-                      bfs_query_labels.view(),
+                      raft::make_const_mdspan(query_info.bfs_queries.view()),
+                      query_info.bfs_query_labels.view(),
                       metadata.bfs_label_size.view(),
                       bfs_neighbors.view(),
                       bfs_distances.view(),
                       cuvs::distance::DistanceType::L2Unexpanded);
     raft::resource::sync_stream(res);
-    auto temp_bfs_neighbors = raft::make_device_matrix<uint32_t, int64_t>(res, n_bfs_queries, topk);
-    convert_neighbors_to_uint32(res,
-                                bfs_neighbors.data_handle(),
-                                temp_bfs_neighbors.data_handle(),
-                                n_bfs_queries,
-                                topk);
-    for (int64_t i = 0; i < n_bfs_queries; i++) {
-      raft::copy_async(neighbors.data_handle() + bfs_indices[i] * topk,
-                      temp_bfs_neighbors.data_handle() + i * topk,
-                      topk,
-                      raft::resource::get_cuda_stream(res));
-      raft::copy_async(distances.data_handle() + bfs_indices[i] * topk,
-                      bfs_distances.data_handle() + i * topk,
-                      topk,
-                      raft::resource::get_cuda_stream(res));
-    }
-    raft::resource::sync_stream(res);
   }
+  
+  merge_search_results<T>(res,
+                        neighbors,
+                        distances,
+                        query_info,
+                        bfs_neighbors.view(),
+                        bfs_distances.view(),
+                        cagra_neighbors.view(),
+                        cagra_distances.view(),
+                        topk);
 }
 
 
