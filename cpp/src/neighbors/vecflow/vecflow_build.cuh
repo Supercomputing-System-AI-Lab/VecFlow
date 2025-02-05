@@ -1,0 +1,284 @@
+/*
+ * Copyright (c) 2024, NVIDIA CORPORATION.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include <cuvs/neighbors/cagra.hpp>
+#include <cuvs/neighbors/ivf_flat.hpp>
+#include <cuvs/neighbors/filtered_bfs.hpp>
+#include <cuvs/neighbors/vecflow.hpp>
+#include <raft/core/device_mdarray.hpp>
+#include <raft/core/device_resources.hpp>
+#include <raft/random/make_blobs.cuh>
+#include <rmm/mr/device/device_memory_resource.hpp>
+#include <rmm/mr/device/pool_memory_resource.hpp>
+#include <rmm/device_vector.hpp>
+
+#include <omp.h>
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <future>
+#include <fstream>
+#include <vector>
+#include <iomanip> 
+
+#include "vecflow_common.cuh"
+
+#pragma once
+
+namespace cuvs::neighbors::vecflow {
+
+template <typename data_t>
+void build_vecflow_index_impl(
+  cuvs::neighbors::vecflow::index<data_t, int64_t>& idx,
+  raft::device_matrix_view<const data_t, int64_t>& dataset,
+  const std::string& data_label_fname,
+  int graph_degree,
+  int specificity_threshold,
+  const std::string& graph_fname,
+  const std::string& bfs_fname) 
+{
+  std::vector<std::vector<int>> label_data_vecs;
+  std::vector<int> cat_freq(0);
+  read_data_labels<data_t, int64_t>(data_label_fname, &label_data_vecs, &cat_freq);
+
+  idx.cagra_index = cagra::index<data_t, uint32_t>(idx.res);
+  idx.bfs_index = ivf_flat::index<data_t, int64_t>(idx.res,
+                                                  cuvs::distance::DistanceType::L2Unexpanded,
+                                                  label_data_vecs.size(),
+                                                  false,
+                                                  true,
+                                                  dataset.extent(1));
+  idx.specificity_threshold = specificity_threshold;
+
+  int dim = dataset.extent(1);
+
+  // Prepare metadata
+  int label_number = label_data_vecs.size();
+  int64_t cagra_total_rows = 0;
+  int64_t bfs_total_rows = 0;
+  int cagra_labels = 0;
+  int bfs_labels = 0;
+  std::vector<uint32_t> host_cagra_label_size(label_number);
+  std::vector<uint32_t> host_cagra_label_offset(label_number);
+  std::vector<uint32_t> host_bfs_label_size(label_number);
+  std::vector<uint32_t> host_bfs_label_offset(label_number);
+  std::vector<uint32_t> host_cat_freq(label_number);
+  for (uint32_t i = 0; i < label_number; i++) {
+    host_cat_freq[i] = cat_freq[i];
+    auto n_rows = label_data_vecs[i].size();
+    if (cat_freq[i] > specificity_threshold) {
+      host_cagra_label_size[i] = n_rows;
+      host_cagra_label_offset[i] = cagra_total_rows;
+      host_bfs_label_size[i] = 0;
+      host_bfs_label_offset[i] = bfs_total_rows;
+      cagra_total_rows += n_rows;
+      cagra_labels++;
+    } else {
+      host_cagra_label_size[i] = 0;
+      host_cagra_label_offset[i] = cagra_total_rows;
+      host_bfs_label_size[i] = n_rows;
+      host_bfs_label_offset[i] = bfs_total_rows;
+      bfs_total_rows += n_rows;
+      bfs_labels++;
+    }
+  }
+
+  std::vector<uint32_t> host_cagra_index_map(cagra_total_rows);
+  std::vector<uint32_t> host_bfs_index_map(bfs_total_rows);
+  uint32_t bfs_iter = 0;
+  uint32_t cagra_iter = 0;
+  for (uint32_t i = 0; i < label_number; i ++) {
+    if (cat_freq[i] > specificity_threshold) {
+      for (uint32_t j = 0; j < label_data_vecs[i].size(); j ++) {
+        host_cagra_index_map[cagra_iter] = label_data_vecs[i][j];
+        cagra_iter ++;
+      }
+    }
+    else {
+      for (uint32_t j = 0; j < label_data_vecs[i].size(); j ++) {
+        host_bfs_index_map[bfs_iter] = label_data_vecs[i][j];
+        bfs_iter ++;
+      }
+    }
+  }
+
+  auto cagra_index_map = raft::make_device_vector<uint32_t, int64_t>(idx.res, cagra_total_rows);
+  auto cagra_label_size = raft::make_device_vector<uint32_t, int64_t>(idx.res, label_number);
+  auto cagra_label_offset = raft::make_device_vector<uint32_t, int64_t>(idx.res, label_number);
+  auto bfs_label_size = raft::make_device_vector<uint32_t, int64_t>(idx.res, label_number);
+  auto d_cat_freq = raft::make_device_vector<uint32_t, int64_t>(idx.res, label_number);
+
+  raft::update_device(cagra_label_size.data_handle(), 
+                      host_cagra_label_size.data(), 
+                      label_number,
+                      raft::resource::get_cuda_stream(idx.res));
+  raft::update_device(cagra_label_offset.data_handle(),
+                      host_cagra_label_offset.data(),
+                      label_number,
+                      raft::resource::get_cuda_stream(idx.res));
+  raft::update_device(cagra_index_map.data_handle(),
+                      host_cagra_index_map.data(),
+                      cagra_total_rows,
+                      raft::resource::get_cuda_stream(idx.res));
+  raft::update_device(bfs_label_size.data_handle(), 
+                      host_bfs_label_size.data(), 
+                      label_number,
+                      raft::resource::get_cuda_stream(idx.res));
+  raft::update_device(d_cat_freq.data_handle(), 
+                      host_cat_freq.data(), 
+                      label_number,
+                      raft::resource::get_cuda_stream(idx.res));
+  raft::resource::sync_stream(idx.res);
+
+  idx.metadata = cuvs::neighbors::vecflow::CombinedIndices(
+    std::move(cagra_index_map),
+    std::move(cagra_label_size),
+    std::move(cagra_label_offset),
+    std::move(bfs_label_size),
+    std::move(d_cat_freq)
+  );
+
+  // Index Information  
+  std::cout << "\n=== Index Information ===" << std::endl;
+
+  if (cagra_labels > 0) {
+    idx.cagra_index.update_dataset(idx.res, raft::make_const_mdspan(dataset));
+    auto host_final_graph = raft::make_host_matrix<uint32_t, int64_t>(cagra_total_rows, graph_degree);
+    std::ifstream graph_file(graph_fname);
+    if (graph_file.good()) {  
+      std::cout << "Loading IVF-CAGRA index from " << graph_fname << std::endl;
+      load_matrix_from_ibin(idx.res, graph_fname, host_final_graph.view());
+      idx.cagra_index.update_graph(idx.res, raft::make_const_mdspan(host_final_graph.view()));
+      graph_file.close();
+    } else {
+      std::cout << "Building IVF-CAGRA index from scratch ..." << std::endl;
+      auto cagra_start_time = std::chrono::high_resolution_clock::now();
+      int optimal_threads = 32;
+      omp_set_num_threads(optimal_threads);
+      std::atomic<size_t> completed_work{0};
+      #pragma omp parallel for num_threads(optimal_threads)
+      for (int i = 0; i < label_number; i++) {
+        if (host_cagra_label_size[i] == 0) continue;
+
+        int thread_id = omp_get_thread_num();
+        shared_resources::thread_id = thread_id;
+        shared_resources::n_threads = optimal_threads;
+        auto thread_resources = idx.res;
+        cudaStream_t thread_stream = thread_resources.get_sync_stream();
+
+        size_t label_size = label_data_vecs[i].size();
+        // Progress calculation and display
+        #pragma omp critical
+        {
+          completed_work += label_size;
+          float progress = (float)completed_work / cagra_total_rows * 100;
+          std::cout << "\rProgress: [";
+          int pos = progress / 2;
+          for (int j = 0; j < 50; j++) {
+              if (j < pos) std::cout << "=";
+              else if (j == pos) std::cout << ">";
+              else std::cout << " ";
+          }
+          std::cout << "] " << std::fixed << std::setprecision(1) << progress << "% "
+                    << "Label: " << i << " Size: " << label_size << std::flush;
+        }
+
+        const auto& matching_indices = label_data_vecs[i];  // Get all indices with this label
+        int write_id = matching_indices.size();
+        if (write_id == 0) continue;  // Skip if no matches found
+
+        // Create filtered dataset with matching indices
+        auto filtered_dataset = raft::make_device_matrix<float, int64_t>(idx.res, write_id, dim);
+        raft::resource::sync_stream(thread_resources);
+        for (uint64_t j = 0; j < write_id; j++) {
+          raft::copy_async(filtered_dataset.data_handle() + j * dim, 
+                          dataset.data_handle() + (uint64_t)matching_indices[j] * dim, 
+                          dim, 
+                          thread_stream);
+        }
+        raft::resource::sync_stream(thread_resources);
+        
+        cagra::index_params index_params;
+        index_params.intermediate_graph_degree = graph_degree * 2;
+        index_params.graph_degree = graph_degree;
+        index_params.attach_dataset_on_build = false; 
+        auto index = cagra::build(thread_resources, index_params, raft::make_const_mdspan(filtered_dataset.view()));
+        
+        raft::copy(host_final_graph.data_handle() + host_cagra_label_offset[i] * graph_degree, 
+                  index.graph().data_handle(), 
+                  host_cagra_label_size[i] * graph_degree, 
+                  thread_stream);
+        raft::resource::sync_stream(thread_resources);
+      }   
+      auto cagra_end_time = std::chrono::high_resolution_clock::now();
+      auto cagra_duration = std::chrono::duration_cast<std::chrono::milliseconds>(cagra_end_time - cagra_start_time);
+      std::cout << "\nIVF-CAGRA index building time: " << cagra_duration.count() / 1000.0 << " seconds" << std::endl;
+      idx.cagra_index.update_graph(idx.res, raft::make_const_mdspan(host_final_graph.view()));
+      if (!graph_fname.empty()) save_matrix_to_ibin(graph_fname, host_final_graph.view());
+      raft::resource::sync_stream(idx.res);
+    }
+  }
+
+  if (bfs_labels > 0) {
+    std::ifstream bfs_file(bfs_fname);
+    if (bfs_file.good()) {
+      std::cout << "Loading IVF-BFS index from " << bfs_fname << std::endl;
+      ivf_flat::deserialize(idx.res, bfs_fname, &idx.bfs_index);
+      bfs_file.close();
+    } else {
+      std::cout << "Building IVF-BFS index from scratch ..." << std::endl;
+      auto bfs_label_offset = raft::make_device_vector<uint32_t, int64_t>(idx.res, label_number);
+      auto bfs_index_map = raft::make_device_vector<uint32_t, int64_t>(idx.res, bfs_total_rows);
+      raft::update_device(bfs_label_offset.data_handle(),
+                      host_bfs_label_offset.data(),
+                      label_number,
+                      raft::resource::get_cuda_stream(idx.res));
+      raft::update_device(bfs_index_map.data_handle(),
+                      host_bfs_index_map.data(),
+                      bfs_total_rows,
+                      raft::resource::get_cuda_stream(idx.res));
+      auto bfs_start_time = std::chrono::high_resolution_clock::now();                 
+      build_filtered_IVF_index(idx.res,
+                              &idx.bfs_index,
+                              dataset,
+                              bfs_index_map.view(),
+                              bfs_label_size.view(),
+                              bfs_label_offset.view());
+      auto bfs_end_time = std::chrono::high_resolution_clock::now();
+      auto bfs_duration = std::chrono::duration_cast<std::chrono::milliseconds>(bfs_end_time - bfs_start_time);
+      std::cout << "IVF-BFS graph building time: " << bfs_duration.count() << " ms" << std::endl;
+      if (!bfs_fname.empty()) {
+        ivf_flat::serialize(idx.res, bfs_fname, idx.bfs_index);
+        std::cout << "Saving IVF-BFS index to " << bfs_fname << std::endl;
+      }
+    }
+  }
+  
+  // CAGRA statistics
+  std::cout << "\nIVF-CAGRA Index Stats:" << std::endl;
+  std::cout << "  Total vectors:  " << idx.cagra_index.size() << std::endl;
+  std::cout << "  Number of labels: " << cagra_labels << std::endl;
+  std::cout << "  Graph size:     [" << idx.cagra_index.graph().extent(0) << " × " 
+            << idx.cagra_index.graph().extent(1) << "]" << std::endl;
+  std::cout << "  Graph degree:   " << idx.cagra_index.graph_degree() << std::endl;
+  // IVF statistics
+  std::cout << "\nIVF-BFS Index Stats:" << std::endl;
+  std::cout << "  Number of labels: " << bfs_labels << std::endl;
+  std::cout << "  Number of rows:  " << bfs_total_rows << std::endl;
+}
+
+} // namespace cuvs::neighbors::vecflow
