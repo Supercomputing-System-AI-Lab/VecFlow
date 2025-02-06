@@ -463,6 +463,8 @@ if(BUILD_SHARED_LIBS)
     src/neighbors/filtered_bfs/detail/search_filtered_ivf_half.cu
     src/neighbors/filtered_bfs/detail/search_filtered_ivf_int8_t.cu
     src/neighbors/filtered_bfs/detail/search_filtered_ivf_uint8_t.cu
+    src/neighbors/vecflow/detail/build_vecflow_float.cu
+    src/neighbors/vecflow/detail/search_vecflow_float.cu
     src/neighbors/refine/detail/refine_device_float_float.cu
     src/neighbors/refine/detail/refine_device_half_float.cu
     src/neighbors/refine/detail/refine_device_int8_t_float.cu

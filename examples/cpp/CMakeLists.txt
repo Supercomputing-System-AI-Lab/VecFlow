@@ -45,6 +45,7 @@ include(../cmake/thirdparty/get_cuvs.cmake)
 # add_executable(CAGRA_PERSISTENT_EXAMPLE src/cagra_persistent_example.cu)
 add_executable(BUILD_SIFT src/vecflow/build_sift.cu)
 add_executable(VECFLOW src/vecflow/vecflow.cu)
+add_executable(VECFLOW_TEST src/vecflow/vecflow_test.cu)
 
 # `$<TARGET_NAME_IF_EXISTS:conda_env>` is a generator expression that ensures that targets are
 # installed in a conda environment, if one exists
@@ -52,3 +53,4 @@ add_executable(VECFLOW src/vecflow/vecflow.cu)
 # target_link_libraries(CAGRA_PERSISTENT_EXAMPLE PRIVATE cuvs::cuvs $<TARGET_NAME_IF_EXISTS:conda_env> Threads::Threads)
 target_link_libraries(BUILD_SIFT PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
 target_link_libraries(VECFLOW PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
+target_link_libraries(VECFLOW_TEST PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)

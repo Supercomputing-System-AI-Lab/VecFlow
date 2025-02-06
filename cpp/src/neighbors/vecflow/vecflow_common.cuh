@@ -14,25 +14,9 @@
  * limitations under the License.
  */
 
-#include <cstdint>
-#include <fstream>
-#include <vector>
-#include <iostream>
+#pragma once
 
-#include <raft/core/device_mdarray.hpp>
-#include <raft/core/device_resources.hpp>
-#include <raft/core/host_mdarray.hpp>
-#include <raft/core/resource/thrust_policy.hpp>
-#include <raft/matrix/copy.cuh>
-#include <raft/random/make_blobs.cuh>
-#include <raft/random/sample_without_replacement.cuh>
-#include <raft/util/cudart_utils.hpp>
-
-#include <thrust/copy.h>
-#include <thrust/device_ptr.h>
-#include <thrust/iterator/counting_iterator.h>
-#include <cuda_runtime.h>
-#include <rmm/device_vector.hpp>
+namespace cuvs::neighbors::vecflow {
 
 template<typename T, typename idxT>
 void read_data_labels(std::string data_label_fname, 
@@ -60,7 +44,7 @@ void read_data_labels(std::string data_label_fname,
 	labels_data->reserve(ncol);
 	labels_data->resize(ncol);
 	cat_freq->resize(ncol, 0);
-	for (uint32_t i = 0; i < N; ++i) {
+	for (uint32_t i = 0; i < nrow; ++i) {
 		std::vector<int> label_list;
 		for (int64_t j = indptr[i]; j < indptr[i+1]; ++j) {
 			label_list.push_back(indices[j]);
@@ -70,7 +54,7 @@ void read_data_labels(std::string data_label_fname,
 	}
 }
 
-void save_matrix_to_ibin(const std::string& filename,
+inline void save_matrix_to_ibin(const std::string& filename,
                          const raft::host_matrix_view<uint32_t, int64_t>& matrix) {
   int64_t rows = matrix.extent(0);
   int64_t cols = matrix.extent(1);
@@ -85,7 +69,7 @@ void save_matrix_to_ibin(const std::string& filename,
   std::cout << "Saving graph to " << filename << std::endl;
 }
 
-void load_matrix_from_ibin(raft::resources const& res,
+inline void load_matrix_from_ibin(raft::resources const& res,
                            const std::string& filename,
                            const raft::host_matrix_view<uint32_t, int64_t>& graph) {
   std::ifstream file(filename, std::ios::binary);
@@ -103,28 +87,7 @@ void load_matrix_from_ibin(raft::resources const& res,
   file.close();
 }
 
-__global__ void convert_int64_to_uint32(const int64_t* input, uint32_t* output, int n) {
-	int idx = blockIdx.x * blockDim.x + threadIdx.x;
-	if (idx < n) {
-		output[idx] = static_cast<uint32_t>(input[idx]);
-	}
-}
-
-void convert_neighbors_to_uint32(raft::resources const& res,
-                               const int64_t* input,
-                               uint32_t* output,
-                               int n_queries,
-                               int k) {
-  int total_elements = n_queries * k;
-  int block_size = 256;
-  int grid_size = (total_elements + block_size - 1) / block_size;
-  
-  convert_int64_to_uint32<<<grid_size, block_size, 0, raft::resource::get_cuda_stream(res)>>>(
-      input, output, total_elements);
-}
-
-
-void read_ground_truth_file(const std::string& fname, std::vector<std::vector<uint32_t>>& gt_indices) {
+inline void read_ground_truth_file(const std::string& fname, std::vector<std::vector<uint32_t>>& gt_indices) {
 
 	std::ifstream file(fname, std::ios::binary);
 	if (!file) {
@@ -211,7 +174,7 @@ __global__ void classify_queries_kernel(
 }
 
 template<typename T>
-auto classify_queries(raft::resources const& res,
+inline auto classify_queries(raft::resources const& res,
                      raft::device_matrix_view<const T, int64_t> queries,
                      raft::device_vector_view<uint32_t, int64_t> query_labels,
                      raft::device_vector_view<uint32_t, int64_t> cat_freq,
@@ -334,7 +297,7 @@ __global__ void merge_neighbors_kernel(
 }
 
 template<typename T>
-void merge_search_results(raft::resources const& res,
+inline void merge_search_results(raft::resources const& res,
                          raft::device_matrix_view<uint32_t, int64_t> neighbors,
                          raft::device_matrix_view<float, int64_t> distances,
                          QueryInfo<T>& query_info,
@@ -375,3 +338,5 @@ void merge_search_results(raft::resources const& res,
     query_info.cagra_query_map.size(),
     topk);
 }
+
+} // namespace cuvs::neighbors::vecflow

@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#pragma once
+
 #include <cuvs/neighbors/cagra.hpp>
 #include <cuvs/neighbors/ivf_flat.hpp>
 #include <cuvs/neighbors/filtered_bfs.hpp>
@@ -37,14 +39,14 @@
 
 #include "vecflow_common.cuh"
 
-#pragma once
-
 namespace cuvs::neighbors::vecflow {
 
+namespace detail {
+
 template <typename data_t>
-void build_vecflow_index_impl(
-  cuvs::neighbors::vecflow::index<data_t, int64_t>& idx,
-  raft::device_matrix_view<const data_t, int64_t>& dataset,
+void build(
+  cuvs::neighbors::vecflow::index<data_t>& idx,
+  raft::device_matrix_view<const data_t, int64_t> dataset,
   const std::string& data_label_fname,
   int graph_degree,
   int specificity_threshold,
@@ -67,7 +69,7 @@ void build_vecflow_index_impl(
   int dim = dataset.extent(1);
 
   // Prepare metadata
-  int label_number = label_data_vecs.size();
+  uint32_t label_number = label_data_vecs.size();
   int64_t cagra_total_rows = 0;
   int64_t bfs_total_rows = 0;
   int cagra_labels = 0;
@@ -171,7 +173,7 @@ void build_vecflow_index_impl(
       omp_set_num_threads(optimal_threads);
       std::atomic<size_t> completed_work{0};
       #pragma omp parallel for num_threads(optimal_threads)
-      for (int i = 0; i < label_number; i++) {
+      for (uint32_t i = 0; i < label_number; i++) {
         if (host_cagra_label_size[i] == 0) continue;
 
         int thread_id = omp_get_thread_num();
@@ -198,7 +200,7 @@ void build_vecflow_index_impl(
         }
 
         const auto& matching_indices = label_data_vecs[i];  // Get all indices with this label
-        int write_id = matching_indices.size();
+        uint64_t write_id = matching_indices.size();
         if (write_id == 0) continue;  // Skip if no matches found
 
         // Create filtered dataset with matching indices
@@ -280,5 +282,21 @@ void build_vecflow_index_impl(
   std::cout << "  Number of labels: " << bfs_labels << std::endl;
   std::cout << "  Number of rows:  " << bfs_total_rows << std::endl;
 }
+
+}  // namespace detail
+
+template<typename data_t>
+void build(
+  cuvs::neighbors::vecflow::index<data_t>& idx,
+  raft::device_matrix_view<const data_t, int64_t> dataset,
+  const std::string& data_label_fname,
+  int graph_degree,
+  int specificity_threshold,
+  const std::string& graph_fname,
+  const std::string& bfs_fname)
+{
+  cuvs::neighbors::vecflow::detail::build<data_t>(
+    idx, dataset, data_label_fname, graph_degree, specificity_threshold, graph_fname, bfs_fname);
+} 
 
 } // namespace cuvs::neighbors::vecflow

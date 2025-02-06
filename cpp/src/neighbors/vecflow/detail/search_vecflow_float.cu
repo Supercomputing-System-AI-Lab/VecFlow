@@ -26,19 +26,22 @@
 #include <cuvs/neighbors/vecflow.hpp>
 #include "../vecflow_search.cuh"
 
+namespace cuvs::neighbors::vecflow {
+
 #define instantiate_search_vecflow_d(data_t) \
- void cuvs::neighbors::vecflow::search( \
-	 cuvs::neighbors::vecflow::index<data_t, int64_t>& idx, \
+ void search( \
+	 cuvs::neighbors::vecflow::index<data_t>& idx, \
 	 raft::device_matrix_view<const data_t, int64_t> queries, \
 	 raft::device_vector_view<uint32_t, int64_t> query_labels, \
 	 int itopk_size, \
 	 raft::device_matrix_view<uint32_t, int64_t> neighbors, \
 	 raft::device_matrix_view<float, int64_t> distances) \
  { \
-	 search_vecflow_index_impl<float>( \
-		 idx, queries, query_labels, itopk_size, neighbors, distances); \
- }
+    cuvs::neighbors::vecflow::search<data_t>( \
+      idx, queries, query_labels, itopk_size, neighbors, distances); \
+  }
 
 instantiate_search_vecflow_d(float);
-
 #undef instantiate_search_vecflow_d
+
+}  // namespace cuvs::neighbors::vecflow

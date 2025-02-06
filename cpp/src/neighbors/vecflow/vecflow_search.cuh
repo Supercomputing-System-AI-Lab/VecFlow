@@ -41,9 +41,10 @@
 
 namespace cuvs::neighbors::vecflow {
 
+namespace detail {
 template<typename data_t>
-void search_vecflow_index_impl(
-	cuvs::neighbors::vecflow::index& idx,
+void search(
+	cuvs::neighbors::vecflow::index<data_t>& idx,
 	raft::device_matrix_view<const float, int64_t> queries,
 	raft::device_vector_view<uint32_t, int64_t> query_labels,
 	int itopk_size,
@@ -52,16 +53,17 @@ void search_vecflow_index_impl(
 {
 	
 	// Configure standard search parameters
+  cuvs::neighbors::cagra::search_params search_params;
   search_params.algo = cagra::search_algo::SINGLE_CTA_FILTERED;
 	search_params.itopk_size = itopk_size;
 
   auto query_info = classify_queries<data_t>(idx.res,
 																						queries,
 																						query_labels,
-																						metadata.cat_freq.view(),
+																						idx.metadata.cat_freq.view(),
 																						idx.specificity_threshold);
 
-  int64_t topk = 10;
+  int64_t topk = neighbors.extent(1);
   int n_cagra_queries = query_info.cagra_query_map.size();
   int n_bfs_queries = query_info.bfs_query_map.size();
   auto cagra_neighbors = raft::make_device_matrix<uint32_t, int64_t>(idx.res, n_cagra_queries, topk);
@@ -78,9 +80,9 @@ void search_vecflow_index_impl(
                           cagra_neighbors.view(),
                           cagra_distances.view(),
                           query_info.cagra_query_labels.view(),
-                          metadata.cagra_index_map.view(),
-                          metadata.cagra_label_size.view(),
-                          metadata.cagra_label_offset.view());
+                          idx.metadata.cagra_index_map.view(),
+                          idx.metadata.cagra_label_size.view(),
+                          idx.metadata.cagra_label_offset.view());
     raft::resource::sync_stream(idx.res);
   }
 
@@ -89,7 +91,7 @@ void search_vecflow_index_impl(
 												idx.bfs_index,
 												raft::make_const_mdspan(query_info.bfs_queries.view()),
 												query_info.bfs_query_labels.view(),
-												metadata.bfs_label_size.view(),
+												idx.metadata.bfs_label_size.view(),
 												bfs_neighbors.view(),
 												bfs_distances.view(),
 												cuvs::distance::DistanceType::L2Unexpanded);
@@ -105,6 +107,21 @@ void search_vecflow_index_impl(
 															cagra_neighbors.view(),
 															cagra_distances.view(),
 															topk);
+}
+
+} // namespace detail
+
+template<typename data_t>
+void search(
+  cuvs::neighbors::vecflow::index<data_t>& idx,
+  raft::device_matrix_view<const data_t, int64_t> queries,
+  raft::device_vector_view<uint32_t, int64_t> query_labels,
+  int itopk_size,
+  raft::device_matrix_view<uint32_t, int64_t> neighbors,
+  raft::device_matrix_view<float, int64_t> distances)
+{
+  cuvs::neighbors::vecflow::detail::search<data_t>(
+    idx, queries, query_labels, itopk_size, neighbors, distances);
 }
 
 } // namespace cuvs::neighbors::vecflow

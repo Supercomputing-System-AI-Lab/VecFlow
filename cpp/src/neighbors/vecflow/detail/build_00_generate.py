@@ -28,23 +28,26 @@ HEADER_TEMPLATE = '''/*
 #include <cuvs/neighbors/vecflow.hpp>
 #include "../vecflow_build.cuh"
 
+namespace cuvs::neighbors::vecflow {{
+
 #define instantiate_build_vecflow_d(data_t) \\
-  void cuvs::neighbors::vecflow::build( \\
-    cuvs::neighbors::vecflow::index<data_t, int64_t>& idx, \\
-    raft::device_matrix_view<const data_t, int64_t>& dataset, \\
-    const std::string& data_label_fname, \\ 
+  void build( \\
+    cuvs::neighbors::vecflow::index<data_t>& idx, \\
+    raft::device_matrix_view<const data_t, int64_t> dataset, \\
+    const std::string& data_label_fname, \\
     int graph_degree, \\
     int specificity_threshold, \\
     const std::string& graph_fname, \\
     const std::string& bfs_fname) \\
   {{ \\
-    build_vecflow_index_impl<{0}>( \\
+    cuvs::neighbors::vecflow::build<data_t>( \\
       idx, dataset, data_label_fname, graph_degree, specificity_threshold, graph_fname, bfs_fname); \\
   }}
 
 instantiate_build_vecflow_d({0});
+#undef instantiate_build_vecflow_d
 
-#undef instantiate_build_vecflow_d'''
+}}  // namespace cuvs::neighbors::vecflow'''
 
 def generate_files():
   file_configs = {

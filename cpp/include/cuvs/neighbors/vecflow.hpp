@@ -20,13 +20,12 @@
 #include <cuvs/neighbors/cagra.hpp>
 #include <cuvs/neighbors/ivf_flat.hpp>
 #include <cuvs/neighbors/filtered_bfs.hpp>
+#include <cuvs/neighbors/shared_resources.hpp>
 
 #include <raft/core/device_mdarray.hpp>
 #include <raft/core/error.hpp>
 #include <raft/core/mdspan_types.hpp>
 #include <raft/core/resources.hpp>
-
-#include "shared_resources.hpp"
 
 namespace cuvs::neighbors::vecflow {
 
@@ -40,12 +39,25 @@ struct CombinedIndices {
   raft::device_vector<uint32_t, int64_t> bfs_label_size;
   raft::device_vector<uint32_t, int64_t> cat_freq;
 
-  CombinedIndices(raft::resources& res);
+  CombinedIndices(raft::resources& res)
+    : cagra_index_map(raft::make_device_vector<uint32_t, int64_t>(res, 0)),
+      cagra_label_size(raft::make_device_vector<uint32_t, int64_t>(res, 0)),
+      cagra_label_offset(raft::make_device_vector<uint32_t, int64_t>(res, 0)),
+      bfs_label_size(raft::make_device_vector<uint32_t, int64_t>(res, 0)),
+      cat_freq(raft::make_device_vector<uint32_t, int64_t>(res, 0))
+  {}
+  // Overload constructor for aggregate return.
   CombinedIndices(raft::device_vector<uint32_t, int64_t>&& c_idx_map,
                   raft::device_vector<uint32_t, int64_t>&& c_label_size,
                   raft::device_vector<uint32_t, int64_t>&& c_label_offset,
                   raft::device_vector<uint32_t, int64_t>&& b_label_size,
-                  raft::device_vector<uint32_t, int64_t>&& cat_f);
+                  raft::device_vector<uint32_t, int64_t>&& cat_f)
+    : cagra_index_map(std::move(c_idx_map)),
+      cagra_label_size(std::move(c_label_size)),
+      cagra_label_offset(std::move(c_label_offset)),
+      bfs_label_size(std::move(b_label_size)),
+      cat_freq(std::move(cat_f))
+  {}
 };
 
 /**
@@ -93,7 +105,7 @@ struct index {
  * @param graph_fname           (Optional) File name to load/save the CAGRA index.
  * @param bfs_fname             (Optional) File name to load/save the BFS index.
  */
-void build(cuvs::neighbors::vecflow::index& idx,
+void build(cuvs::neighbors::vecflow::index<float>& idx,
            raft::device_matrix_view<const float, int64_t> d_dataset,
            const std::string& data_label_fname,
            int graph_degree,
@@ -114,7 +126,7 @@ void build(cuvs::neighbors::vecflow::index& idx,
  * @param neighbors     [out] Device matrix view to hold neighbor indices.
  * @param distances     [out] Device matrix view to hold distances.
  */
-void search(cuvs::neighbors::vecflow::index& idx,
+void search(cuvs::neighbors::vecflow::index<float>& idx,
             raft::device_matrix_view<const float, int64_t> queries,
             raft::device_vector_view<uint32_t, int64_t> query_labels,
             int itopk_size,
