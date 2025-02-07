@@ -2,11 +2,13 @@
 
 #include <cuvs/neighbors/vecflow.hpp>
 #include <raft/core/device_mdarray.hpp>
+#include <raft/core/device_resources.hpp>
+#include <raft/matrix/copy.cuh>
 
 
 using namespace cuvs::neighbors;
 
-PyVecFlow::PyVecFlow() : idx() {};
+vecflow::index<float> PyVecFlow::idx;
 
 void PyVecFlow::build(py::array_t<float> dataset,
                       std::string data_label_fname,
@@ -19,12 +21,17 @@ void PyVecFlow::build(py::array_t<float> dataset,
   int n = dataset_info.shape[0];
   int dim = dataset_info.shape[1];
 
-  // Copy queries to device.
+  // Copy dataset to device.
   auto d_dataset = raft::make_device_matrix<float, int64_t>(idx.res, n, dim);
   raft::copy(d_dataset.data_handle(),
-             static_cast<float*>(dataset_info.ptr),
-             n * dim,
-             raft::resource::get_cuda_stream(idx.res));
+            static_cast<float*>(dataset_info.ptr),
+            n * dim,
+            raft::resource::get_cuda_stream(idx.res));
+  d_dataset = raft::make_device_matrix<float, int64_t>(idx.res, n, dim);
+  raft::copy(d_dataset.data_handle(),
+            static_cast<float*>(dataset_info.ptr),
+            n * dim,
+            raft::resource::get_cuda_stream(idx.res));
   raft::resource::sync_stream(idx.res);
 
   vecflow::build(idx,

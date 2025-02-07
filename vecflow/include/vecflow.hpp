@@ -11,10 +11,9 @@ using namespace cuvs::neighbors;
 class PyVecFlow {
 
 private:
-  vecflow::index<float> idx;
+  static vecflow::index<float> idx;
 
 public:
-  PyVecFlow();
 
   void build(py::array_t<float> dataset,
             std::string data_label_fname,

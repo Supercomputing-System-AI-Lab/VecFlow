@@ -105,7 +105,6 @@ def main():
 
   # Compute recall
   print("\n=== Computing Recall ===")
-  print(neighbors[:10])
   recall = vf.compute_recall(neighbors, np.array(gt_indices))
   print(f"Overall recall: {recall:.6f}")
 
