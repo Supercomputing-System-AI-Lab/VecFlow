@@ -67,7 +67,6 @@ def main():
   print("\n=== Loading Dataset ===")
   dataset = load_fbin(data_fname)
   queries = load_fbin(query_fname)
-  data_labels, num_labels = load_labels(data_label_fname)
   query_labels, _ = load_labels(query_label_fname)
   gt_indices = load_groundtruth(gt_fname)
 
@@ -77,20 +76,15 @@ def main():
   # Initialize VecFlow
   vf = VecFlow()
 
-  # Load data
-  print("\n=== Loading Data into VecFlow ===")
-  start_time = time.time()
-  vf.load_data(dataset, data_labels, num_labels)
-  load_time = time.time() - start_time
-  print(f"Data loading time: {load_time:.2f} seconds")
-
   # Build index
   print("\n=== Building Index ===")
   start_time = time.time()
-  vf.build(args.graph_degree,
-       args.spec_threshold,
-       graph_fname,
-       bfs_fname)
+  vf.build(dataset,
+           data_label_fname,
+           args.graph_degree,
+           args.spec_threshold,
+           graph_fname,
+           bfs_fname)
   build_time = time.time() - start_time
   print(f"Index building time: {build_time:.2f} seconds")
 
@@ -98,14 +92,11 @@ def main():
   print("\n=== Performing Search ===")
   query_labels = np.array([i[0] for i in query_labels])
   for i in range(10):
-    _, _ = vf.search(queries, query_labels, args.itopk_size, args.spec_threshold)
+    _, _ = vf.search(queries, query_labels, args.itopk_size)
   num_searches = 100
   start_time = time.perf_counter()
   for _ in range(num_searches):
-    neighbors, distances = vf.search(queries, 
-                                  query_labels,
-                                  args.itopk_size,
-                                  args.spec_threshold)
+    neighbors, distances = vf.search(queries, query_labels, args.itopk_size)
   total_time = time.perf_counter() - start_time
   avg_ms = (total_time * 1000) / num_searches
   print(f"Search timing ({num_searches} runs):")
@@ -114,6 +105,7 @@ def main():
 
   # Compute recall
   print("\n=== Computing Recall ===")
+  print(neighbors[:10])
   recall = vf.compute_recall(neighbors, np.array(gt_indices))
   print(f"Overall recall: {recall:.6f}")
 

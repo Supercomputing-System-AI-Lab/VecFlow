@@ -61,7 +61,6 @@ include(./cmake/thirdparty/get_cuvs.cmake)
 pybind11_add_module(vecflow 
     binding/binding.cpp
     src/vecflow.cu
-    src/common.cuh
 )
 
 # Add include directories for the target
