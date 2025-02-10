@@ -89,7 +89,7 @@ int main() {
 }
 ```
 
-# Examples
+## Examples
 
 For detailed usage examples and tutorials, please refer to the [examples](examples/README.md) in the repository.
 
