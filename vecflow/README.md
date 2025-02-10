@@ -75,7 +75,7 @@ int main() {
     // Build index
     vecflow::build(idx,
                   dataset,                  // device matrix of vectors
-                  "labels.txt",             // path to label file
+                  "labels.spmat",           // path to data label file
                   16,                       // graph degree
                   2000,                     // specificity threshold
                   "graph.bin",              // path to save or load IVF-CAGRA graph
