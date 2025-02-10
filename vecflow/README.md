@@ -35,6 +35,8 @@ pip install dist/vecflow-0.0.1-cp312-cp312-linux_x86_64.whl
 
 Note: Make sure you have CUDA 11 compatible GPUs and drivers installed on your system before installation.
 
+For instructions on building from source (both Python and C++), please refer to our [build instructions](examples/README.md#building-from-source).
+
 ## Quick Start
 
 ### Python API

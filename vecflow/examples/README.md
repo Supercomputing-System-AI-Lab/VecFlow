@@ -1,5 +1,45 @@
 # Examples
 
+## Building from Source
+To build Python and C++ from source, we first need to build cuVS from source since VecFlow integrates with it. Here's the step-by-step process:
+
+First, set up the build environment using conda:
+
+```bash
+# For CUDA 12.8+
+conda env create --name cuvs -f conda/environments/all_cuda-128_arch-x86_64.yaml
+conda activate cuvs
+
+# OR for CUDA 11.8
+conda env create --name cuvs -f conda/environments/all_cuda-118_arch-x86_64.yaml
+conda activate cuvs
+```
+
+### Build cuVS Library
+Go to the VecFlow root directory and build the C/C++ libraries:
+
+```bash
+cd ../../
+./build.sh libcuvs
+```
+
+This creates:
+* libcuvs.so (C++ library)
+* libcuvs_c.so (C API library)
+
+These are installed by default in `$INSTALL_PREFIX/lib`. After this step, the VecFlow headers are available for use in your C++ applications.
+
+### Build Python Package from Source
+After building cuVS, build the Python package:
+
+```bash
+cd vecflow
+mkdir build
+cd build
+cmake ..
+make install
+```
+
 ## Getting Started with SIFT1M Dataset
 
 ### Download Dataset
@@ -54,47 +94,8 @@ The script will:
 
 ### Running the C++ Example
 
-I'll help document the C++ example instructions for VecFlow:
-
-**Running the C++ Example**
-
-To run the C++ example, we first need to build cuVS from source since VecFlow integrates with it. Here's the step-by-step process:
-
-**1. Build cuVS from Source**
-
-First, set up the build environment using conda:
-
-```bash
-# For CUDA 12.8+
-conda env create --name cuvs -f conda/environments/all_cuda-128_arch-x86_64.yaml
-conda activate cuvs
-
-# OR for CUDA 11.8
-conda env create --name cuvs -f conda/environments/all_cuda-118_arch-x86_64.yaml
-conda activate cuvs
-```
-
-Note: For CUDA 11, you need the CUDA toolkit installed on your host system since conda's cudatoolkit doesn't include nvcc.
-
-**2. Build cuVS Library**
-
-Go to the VecFlow root directory and build the C/C++ libraries:
-
-```bash
-cd ../../
-./build.sh libcuvs
-```
-
-This creates:
-
-- libcuvs.so (C++ library)
-- libcuvs_c.so (C API library)
-
-These are installed by default in `$INSTALL_PREFIX/lib`. 
-
-**3. Build VecFlow C++ Example**
-
-After building cuVS, navigate to the VecFlow C++ example directory and build it:
+#### Build C++ Example
+To build the C++ example:
 
 ```bash
 cd vecflow/examples/cpp
@@ -103,8 +104,6 @@ cd build
 cmake ..
 make
 ```
-
-**4. Run the Example**
 
 Run the compiled example with parameters:
 
