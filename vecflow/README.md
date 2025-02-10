@@ -47,7 +47,7 @@ vf = VecFlow()
 
 # Build index
 vf.build(dataset=vectors,                   # numpy array of vectors (n_vectors x dim)
-         data_label_fname="labels.spmat", 	# path to data label file
+         data_label_fname="labels.spmat",   # path to data label file
          graph_degree=16,                   # graph degree for high-specificity labels
          specificity_threshold=2000,        # threshold for label specificity
          graph_fname="graph.bin",           # path to save or load IVF-CAGRA graph
