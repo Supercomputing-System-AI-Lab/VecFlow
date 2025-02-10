@@ -52,7 +52,7 @@ The script will:
 3. Perform searches 
 4. Compute and report timing and recall metrics
 
-## Running the C++ Example
+### Running the C++ Example
 
 I'll help document the C++ example instructions for VecFlow:
 
