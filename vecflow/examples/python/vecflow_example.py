@@ -40,7 +40,7 @@ def load_groundtruth(fname):
 
 def main():
   parser = argparse.ArgumentParser(description='Test VecFlow API')
-  parser.add_argument('--data_dir', type=str, default='/scratch/bcjw/cmo1/CAGRA/',
+  parser.add_argument('--data_dir', type=str, default='../data/',
             help='Directory containing dataset files')
   parser.add_argument('--itopk_size', type=int, default=32,
             help='Internal topk size for search')
@@ -92,16 +92,18 @@ def main():
   print("\n=== Performing Search ===")
   query_labels = np.array([i[0] for i in query_labels])
   for i in range(10):
-    _, _ = vf.search(queries, query_labels, args.itopk_size)
-  num_searches = 100
+      _, _ = vf.search(queries, query_labels, args.itopk_size)
+  num_searches = 1000
   start_time = time.perf_counter()
   for _ in range(num_searches):
-    neighbors, distances = vf.search(queries, query_labels, args.itopk_size)
+      neighbors, distances = vf.search(queries, query_labels, args.itopk_size)
   total_time = time.perf_counter() - start_time
   avg_ms = (total_time * 1000) / num_searches
+  qps = num_searches * queries.shape[0] / total_time
   print(f"Search timing ({num_searches} runs):")
-  print(f"- Total time: {total_time*1000:.2f} ms") 
+  print(f"- Total time: {total_time*1000:.2f} ms")
   print(f"- Average per search: {avg_ms:.2f} ms")
+  print(f"- QPS: {qps:.2f}")
 
   # Compute recall
   print("\n=== Computing Recall ===")
