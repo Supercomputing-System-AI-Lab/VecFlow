@@ -69,6 +69,23 @@ The dataset contains:
 * `sift.groundtruth.neighbors.ibin`: Ground truth neighbors for evaluating recall
 * `sift.groundtruth.distances.fbin`: Ground truth distances
 
+The .spmat files store labels in binary format with three sequential parts:
+
+1. Header (three 64-bit integers):
+   - nrow: Number of data points, where each point has multiple labels
+   - ncol: Maximum label value + 1 (defines valid label range 0 to ncol-1)
+   - nnz:  Total number of labels across all data points
+
+2. Row Pointers (array of 64-bit integers):
+   - Length: nrow + 1 
+   - indptr[i] and indptr[i+1] mark where data point i's labels are stored in the indices array
+
+3. Label Values (array of 32-bit integers):
+   - Length: nnz
+   - Contains actual label values, each in range [0, ncol-1]
+
+For loading details, see [vecflow_example.py](https://github.com/Supercomputing-System-AI-Lab/VecFlow/blob/test/vecflow/examples/python/vecflow_example.py#L17)
+
 ### Running the Python Example
 
 ```bash
