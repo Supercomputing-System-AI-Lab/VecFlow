@@ -55,7 +55,7 @@ void build(
 {
   std::vector<std::vector<int>> label_data_vecs;
   std::vector<int> cat_freq(0);
-  read_data_labels<data_t, int64_t>(data_label_fname, &label_data_vecs, &cat_freq);
+  read_data_labels<data_t, int64_t>(data_label_fname, &label_data_vecs, &cat_freq, dataset.extent(0));
 
   idx.cagra_index = cagra::index<data_t, uint32_t>(idx.res);
   idx.bfs_index = ivf_flat::index<data_t, int64_t>(idx.res,
@@ -145,14 +145,6 @@ void build(
                       label_number,
                       raft::resource::get_cuda_stream(idx.res));
   raft::resource::sync_stream(idx.res);
-
-  idx.metadata = cuvs::neighbors::vecflow::CombinedIndices(
-    std::move(cagra_index_map),
-    std::move(cagra_label_size),
-    std::move(cagra_label_offset),
-    std::move(bfs_label_size),
-    std::move(d_cat_freq)
-  );
 
   // Index Information  
   std::cout << "\n=== Index Information ===" << std::endl;
@@ -281,6 +273,14 @@ void build(
   std::cout << "\nIVF-BFS Index Stats:" << std::endl;
   std::cout << "  Number of labels: " << bfs_labels << std::endl;
   std::cout << "  Number of rows:  " << bfs_total_rows << std::endl;
+
+  idx.metadata = cuvs::neighbors::vecflow::CombinedIndices(
+    std::move(cagra_index_map),
+    std::move(cagra_label_size),
+    std::move(cagra_label_offset),
+    std::move(bfs_label_size),
+    std::move(d_cat_freq)
+  );
 }
 
 }  // namespace detail

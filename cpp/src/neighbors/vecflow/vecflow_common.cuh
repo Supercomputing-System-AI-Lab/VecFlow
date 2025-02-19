@@ -21,7 +21,8 @@ namespace cuvs::neighbors::vecflow {
 template<typename T, typename idxT>
 void read_data_labels(std::string data_label_fname, 
                       std::vector<std::vector<int>>* labels_data, 
-                      std::vector<int>* cat_freq) {
+                      std::vector<int>* cat_freq,
+                      int N) {
 
 	std::ifstream labelfile(data_label_fname, std::ios::binary);
 	if (!labelfile) {
@@ -30,6 +31,11 @@ void read_data_labels(std::string data_label_fname,
 	std::vector<int64_t> sizes(3);
 	labelfile.read(reinterpret_cast<char*>(sizes.data()), 3 * sizeof(int64_t));
 	int64_t nrow = sizes[0], ncol = sizes[1], nnz = sizes[2];
+  if (N != nrow) {
+    throw std::runtime_error("Number of rows in dataset (" + std::to_string(N) + 
+                            ") doesn't match number of rows in label file (" + 
+                            std::to_string(nrow) + ")");
+  }
 	std::vector<int64_t> indptr(nrow + 1);
 	labelfile.read(reinterpret_cast<char*>(indptr.data()), (nrow + 1) * sizeof(int64_t));
 	if (nnz != indptr.back()) {
