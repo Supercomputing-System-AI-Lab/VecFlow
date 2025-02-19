@@ -26,6 +26,74 @@ def load_labels(fname):
                   for i in range(nrow)]
   return labels_list, ncol
 
+def spmat2txt(input_file, output_file):
+  """
+    Save labels to a text file where:
+    - Each row represents a data point
+    - Labels are comma-separated
+    - Labels are incremented by 1 from original values
+    - A row with only 0 means no labels for that data point
+  """
+  labels_list, ncol = load_labels(input_file)
+  with open(output_file, 'w') as f:
+    for i, labels in enumerate(labels_list):
+      if labels:
+        # Add 1 to each label and join with commas
+        line = ','.join(map(str, [label + 1 for label in labels]))
+      else:
+        # Output "0" for rows with no labels
+        line = '0'
+      
+      if i < len(labels_list) - 1:
+        f.write(line + '\n')
+      else:
+        f.write(line)
+
+def txt2spmat(input_file, output_file):
+    """
+    Convert a text file with label lists to spmat format
+    - Each input line contains comma-separated label indices
+    - Lines with "0" indicate no labels for that row
+    - All labels are decremented by 1 to convert from 1-indexed to 0-indexed
+    """
+    with open(input_file, 'r') as f:
+      lines = f.readlines()
+    
+    labels_list = []
+    for line in lines:
+      line = line.strip()
+      if line and line != "0":
+        # Split by comma and convert to int, then subtract 1 from each label
+        labels = [int(label) - 1 for label in line.split(',')]
+        labels_list.append(labels)
+      else:
+        # Empty line or "0" means no labels
+        labels_list.append([])
+    
+    nrow = len(labels_list)
+    if nrow == 0:
+      ncol = 0
+      nnz = 0
+    else:
+      max_label = max([max(labels) if labels else 0 for labels in labels_list])
+      ncol = max_label + 1
+      nnz = sum(len(labels) for labels in labels_list)
+    
+    indptr = np.zeros(nrow + 1, dtype=np.int64)
+    indices = np.zeros(nnz, dtype=np.int32)
+    idx = 0
+    for i, labels in enumerate(labels_list):
+      indptr[i] = idx
+      for label in labels:
+          indices[idx] = label
+          idx += 1
+    indptr[nrow] = nnz
+    
+    with open(output_file, 'wb') as f:
+      np.array([nrow, ncol, nnz], dtype=np.int64).tofile(f)
+      indptr.tofile(f)
+      indices.tofile(f)
+
 def load_groundtruth(fname):
   """Load groundtruth from binary file."""
   gt_indices = []
@@ -57,6 +125,14 @@ def main():
   query_fname = os.path.join(base_path, "sift.query.fbin")
   query_label_fname = os.path.join(base_path, "sift.query.spmat")
   gt_fname = os.path.join(base_path, "sift.groundtruth.neighbors.ibin")
+  
+  # Check if the binary spmat files exist and convert from text format if needed
+  if not os.path.exists(data_label_fname):
+    txt_file = os.path.join(base_path, "sift.base.txt")
+    txt2spmat(txt_file, data_label_fname)
+  if not os.path.exists(query_label_fname):
+    txt_file = os.path.join(base_path, "sift.query.txt")
+    txt2spmat(txt_file, query_label_fname)
 
   # Graph file names
   graph_fname = os.path.join(base_path,

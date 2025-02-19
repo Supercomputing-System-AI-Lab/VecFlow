@@ -85,6 +85,11 @@ void read_labeled_data(std::string data_fname,
 	}
 	qlabelfile.read(reinterpret_cast<char*>(sizes.data()), 3 * sizeof(int64_t));
 	nrow = sizes[0], ncol = sizes[1], nnz = sizes[2];
+	if (q_N != nrow) {
+    throw std::runtime_error("Number of rows in queries (" + std::to_string(N) + 
+                            ") doesn't match number of rows in query label file (" + 
+                            std::to_string(nrow) + ")");
+  }
 	indptr.resize(nrow + 1);
 	qlabelfile.read(reinterpret_cast<char*>(indptr.data()), (nrow + 1) * sizeof(int64_t));
 	if (nnz != indptr.back()) {
@@ -172,4 +177,100 @@ void compute_recall(const raft::resources& res,
   std::cout << "Overall recall (" << n_queries << " queries): " 
           << std::fixed << std::setprecision(6) 
           << total_recall / n_queries << std::endl;
+}
+
+void txt2spmat(const std::string& input_file, const std::string& output_file) {
+  std::ifstream infile(input_file);
+  if (!infile) {
+    std::cerr << "Error: Could not open input file: " << input_file << std::endl;
+    return;
+  }
+
+  // Read all lines from file
+  std::vector<std::string> lines;
+  std::string line;
+  while (std::getline(infile, line)) {
+    lines.push_back(line);
+  }
+  infile.close();
+  
+  // Parse labels from each line
+  std::vector<std::vector<int32_t>> labels_list;
+  for (const auto& line : lines) {
+    std::string trimmed_line = line;
+    // Trim whitespace
+    trimmed_line.erase(0, trimmed_line.find_first_not_of(" \t\r\n"));
+    trimmed_line.erase(trimmed_line.find_last_not_of(" \t\r\n") + 1);
+    
+    if (!trimmed_line.empty() && trimmed_line != "0") {
+      // Handle comma-separated values and decrement by 1
+      std::vector<int32_t> labels;
+      std::istringstream iss(trimmed_line);
+      std::string token;
+      
+      while (std::getline(iss, token, ',')) {
+        int32_t label = std::stoi(token) - 1; // Convert from 1-indexed to 0-indexed
+        labels.push_back(label);
+      }
+      labels_list.push_back(labels);
+    } else {
+      // Empty line or "0" means no labels
+      labels_list.push_back(std::vector<int32_t>());
+    }
+  }
+  
+  // Calculate CSR parameters
+  int64_t nrow = labels_list.size();
+  int64_t ncol = 0;
+  int64_t nnz = 0;
+  
+  if (nrow > 0) {
+    // Find maximum label value
+    for (const auto& labels : labels_list) {
+      if (!labels.empty()) {
+        int32_t max_in_row = *std::max_element(labels.begin(), labels.end());
+        ncol = std::max(ncol, static_cast<int64_t>(max_in_row) + 1);
+      }
+      nnz += labels.size();
+    }
+  }
+  
+  // Build CSR representation
+  std::vector<int64_t> indptr(nrow + 1, 0);
+  std::vector<int32_t> indices(nnz, 0);
+  
+  int64_t idx = 0;
+  for (int64_t i = 0; i < nrow; i++) {
+    indptr[i] = idx;
+    for (const auto& label : labels_list[i]) {
+      indices[idx++] = label;
+    }
+  }
+  indptr[nrow] = nnz;
+  
+  // Write to binary file
+  std::ofstream outfile(output_file, std::ios::binary);
+  if (!outfile) {
+    std::cerr << "Error: Could not open output file: " << output_file << std::endl;
+    return;
+  }
+  
+  // Write header: nrow, ncol, nnz
+  outfile.write(reinterpret_cast<const char*>(&nrow), sizeof(int64_t));
+  outfile.write(reinterpret_cast<const char*>(&ncol), sizeof(int64_t));
+  outfile.write(reinterpret_cast<const char*>(&nnz), sizeof(int64_t));
+  
+  // Write indptr
+  outfile.write(reinterpret_cast<const char*>(indptr.data()), (nrow + 1) * sizeof(int64_t));
+  
+  // Write indices
+  outfile.write(reinterpret_cast<const char*>(indices.data()), nnz * sizeof(int32_t));
+  
+  outfile.close();
+  
+  std::cout << "Converted text file to spmat format:" << std::endl
+            << "  Rows: " << nrow << std::endl
+            << "  Columns: " << ncol << std::endl
+            << "  Non-zeros: " << nnz << std::endl
+            << "Output saved to " << output_file << std::endl;
 }

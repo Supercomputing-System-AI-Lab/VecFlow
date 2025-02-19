@@ -9,7 +9,7 @@ using namespace cuvs::neighbors;
 
 int main(int argc, char** argv) {
   // Default values
-  std::string data_dir = "../../data/";
+  std::string data_dir = "../../data";
   int itopk_size = 32;
   int specificity_threshold = 1000;
   int graph_degree = 16;
@@ -26,9 +26,21 @@ int main(int argc, char** argv) {
   // Construct file paths
   std::string base_path = data_dir + "/sift1M";
   std::string data_fname = base_path + "/sift.base.fbin";
-  std::string data_label_fname = base_path + "/sift.base.spmat";
   std::string query_fname = base_path + "/sift.query.fbin";
+	std::string data_label_fname = base_path + "/sift.base.spmat";
   std::string query_label_fname = base_path + "/sift.query.spmat";
+
+	// Check if the binary spmat files exist and convert from text format if needed
+	std::ifstream datafile(data_label_fname);
+	if (!datafile) {
+		std::string txt_file = base_path + "/sift.base.txt";
+		txt2spmat(txt_file, data_label_fname);
+	}
+	std::ifstream queryfile(query_label_fname);
+	if (!queryfile) {
+		std::string txt_file = base_path + "/sift.query.txt";
+		txt2spmat(txt_file, query_label_fname);
+	}
   
   std::string graph_fname = base_path + "/graph_" + 
                           std::to_string(graph_degree * 2) + "_" + 
@@ -37,7 +49,7 @@ int main(int argc, char** argv) {
   std::string bfs_fname = base_path + "/spec_" + 
                           std::to_string(specificity_threshold) + ".bin";
   
-  std::string gt_fname = "../../data/sift1M/sift.groundtruth.neighbors.ibin";
+  std::string gt_fname = base_path + "/sift.groundtruth.neighbors.ibin";
 
   std::vector<float> h_data;
   std::vector<float> h_queries;
@@ -93,6 +105,7 @@ int main(int argc, char** argv) {
                     itopk_size,
                     neighbors.view(),
                     distances.view());
+		raft::resource::sync_stream(idx.res);
   }
   // Timed runs
   int num_searches = 1000;
@@ -104,6 +117,7 @@ int main(int argc, char** argv) {
                     itopk_size,
                     neighbors.view(),
                     distances.view());
+		raft::resource::sync_stream(idx.res);
   }
   auto end_time = std::chrono::high_resolution_clock::now();
   auto total_time = std::chrono::duration<double>(end_time - start_time).count();
