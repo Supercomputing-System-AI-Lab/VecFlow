@@ -31,18 +31,16 @@ def spmat2txt(input_file, output_file):
     Save labels to a text file where:
     - Each row represents a data point
     - Labels are comma-separated
-    - Labels are incremented by 1 from original values
-    - A row with only 0 means no labels for that data point
+    - A row with only -1 means no labels for that data point
   """
   labels_list, ncol = load_labels(input_file)
   with open(output_file, 'w') as f:
     for i, labels in enumerate(labels_list):
       if labels:
-        # Add 1 to each label and join with commas
-        line = ','.join(map(str, [label + 1 for label in labels]))
+        line = ','.join(map(str, [label for label in labels]))
       else:
-        # Output "0" for rows with no labels
-        line = '0'
+        # Output "-1" for rows with no labels
+        line = '-1'
       
       if i < len(labels_list) - 1:
         f.write(line + '\n')
@@ -53,7 +51,7 @@ def txt2spmat(input_file, output_file):
     """
     Convert a text file with label lists to spmat format
     - Each input line contains comma-separated label indices
-    - Lines with "0" indicate no labels for that row
+    - Lines with "-1" indicate no labels for that row
     - All labels are decremented by 1 to convert from 1-indexed to 0-indexed
     """
     with open(input_file, 'r') as f:
@@ -62,12 +60,12 @@ def txt2spmat(input_file, output_file):
     labels_list = []
     for line in lines:
       line = line.strip()
-      if line and line != "0":
-        # Split by comma and convert to int, then subtract 1 from each label
-        labels = [int(label) - 1 for label in line.split(',')]
+      if line and line != "-1":
+        # Split by comma and convert to int
+        labels = [int(label) for label in line.split(',')]
         labels_list.append(labels)
       else:
-        # Empty line or "0" means no labels
+        # "-1" means no labels
         labels_list.append([])
     
     nrow = len(labels_list)

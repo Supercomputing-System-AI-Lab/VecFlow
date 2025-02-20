@@ -202,19 +202,19 @@ void txt2spmat(const std::string& input_file, const std::string& output_file) {
     trimmed_line.erase(0, trimmed_line.find_first_not_of(" \t\r\n"));
     trimmed_line.erase(trimmed_line.find_last_not_of(" \t\r\n") + 1);
     
-    if (!trimmed_line.empty() && trimmed_line != "0") {
+    if (!trimmed_line.empty() && trimmed_line != "-1") {
       // Handle comma-separated values and decrement by 1
       std::vector<int32_t> labels;
       std::istringstream iss(trimmed_line);
       std::string token;
       
       while (std::getline(iss, token, ',')) {
-        int32_t label = std::stoi(token) - 1; // Convert from 1-indexed to 0-indexed
+        int32_t label = std::stoi(token);
         labels.push_back(label);
       }
       labels_list.push_back(labels);
     } else {
-      // Empty line or "0" means no labels
+      // Empty line or "-1" means no labels
       labels_list.push_back(std::vector<int32_t>());
     }
   }
