@@ -84,11 +84,11 @@ The .spmat files store labels in binary format with three sequential parts:
 #### Text Label Format (.txt)
 We also support a text-based label format (.txt):
 * Each line corresponds to one data point
-* Labels are comma-separated integers (1-indexed)
-* Valid label values range from 1 to N (where N is the maximum label value)
-* A line containing only "0" indicates a data point with no labels
+* Labels are comma-separated integers
+* Valid label values range from 0 to N-1
+* A line containing only "-1" indicates a data point with no labels
 
-**Important**: Text format labels (.txt) must be converted to binary .spmat format before passing to the VecFlow::build function. The conversion handles index offsets automatically - labels in text format are 1-indexed (where label "1" in .txt corresponds to label "0" in .spmat).
+**Important**: Text format labels (.txt) must be converted to binary .spmat format before passing to the VecFlow::build function.
 
 #### Utility Functions
 For conversion and loading utilities, see:
