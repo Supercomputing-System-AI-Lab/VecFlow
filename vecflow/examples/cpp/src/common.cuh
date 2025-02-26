@@ -2,6 +2,7 @@
 #include <fstream>
 #include <vector>
 #include <iostream>
+#include <cuvs/neighbors/brute_force.hpp>
 
 template<typename T, typename idxT>
 void read_labeled_data(std::string data_fname, 
@@ -113,48 +114,170 @@ void read_labeled_data(std::string data_fname,
 	}
 }
 
-void read_ground_truth_file(const std::string& fname, std::vector<std::vector<uint32_t>>& gt_indices) {
-
-	std::ifstream file(fname, std::ios::binary);
-	if (!file) {
-		std::cout << "Warning: Ground truth file not found: " << fname << std::endl;
-		return;
-	}
-
-	// Read dimensions
-	int64_t rows, cols;
-	file.read(reinterpret_cast<char*>(&rows), sizeof(int64_t));
-	file.read(reinterpret_cast<char*>(&cols), sizeof(int64_t));
-
-	// std::cout << "\n=== Reading Ground Truth File ===" << std::endl;
-	// std::cout << "Dimensions: [" << rows << " x " << cols << "]" << std::endl;
-
-	// Read data to temporary host buffer
-	std::vector<uint32_t> h_matrix(rows * cols);
-	file.read(reinterpret_cast<char*>(h_matrix.data()), rows * cols * sizeof(uint32_t));
-	file.close();
-
-	// Reshape into vector of vectors
-	gt_indices.resize(rows);
-	for (int64_t i = 0; i < rows; i++) {
-		gt_indices[i].resize(cols);
-		for (int64_t j = 0; j < cols; j++) {
-			gt_indices[i][j] = h_matrix[i * cols + j];
-		}
+__global__ void convert_int64_to_uint32(const int64_t* input, uint32_t* output, int n) {
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx < n) {
+		output[idx] = static_cast<uint32_t>(input[idx]);
 	}
 }
 
-void compute_recall(const raft::resources& res,
-										raft::device_matrix_view<uint32_t, int64_t> neighbors,
-                    const std::vector<std::vector<uint32_t>>& gt_indices) {
+void convert_neighbors_to_uint32(raft::resources const& res,
+                               const int64_t* input,
+                               uint32_t* output,
+                               int n_queries,
+                               int k) {
+  int total_elements = n_queries * k;
+  int block_size = 256;
+  int grid_size = (total_elements + block_size - 1) / block_size;
+  
+  convert_int64_to_uint32<<<grid_size, block_size, 0, raft::resource::get_cuda_stream(res)>>>(
+      input, output, total_elements);
+}
+
+void save_matrix_to_ibin(raft::resources const& res,
+												std::string& filename,
+                        raft::device_matrix_view<uint32_t, int64_t>& matrix) {
 	
+	int32_t rows = matrix.extent(0);
+	int32_t cols = matrix.extent(1);
+
+	auto host_matrix = raft::make_host_matrix<uint32_t, int64_t>(rows, cols);
+	raft::copy(host_matrix.data_handle(),
+						matrix.data_handle(),
+						matrix.size(),
+						raft::resource::get_cuda_stream(res));
+	
+	std::ofstream file(filename, std::ios::binary);
+	if (!file) throw std::runtime_error("Cannot create file: " + filename);
+  file.write(reinterpret_cast<const char*>(&rows), sizeof(int32_t));
+  file.write(reinterpret_cast<const char*>(&cols), sizeof(int32_t));
+  file.write(reinterpret_cast<const char*>(host_matrix.data_handle()), rows * cols * sizeof(uint32_t));
+  file.close();
+  std::cout << "Saving matrix to " << filename << std::endl;
+}
+
+void load_matrix_from_ibin(raft::resources const& res,
+                          std::string& filename,
+                          raft::device_matrix_view<uint32_t, int64_t>& matrix) {
+  std::ifstream file(filename, std::ios::binary);
+  if (!file) throw std::runtime_error("Cannot open file: " + filename);
+  int32_t rows, cols;
+  file.read(reinterpret_cast<char*>(&rows), sizeof(int32_t));
+  file.read(reinterpret_cast<char*>(&cols), sizeof(int32_t));
+
+	auto host_matrix = raft::make_host_matrix<uint32_t, int64_t>(rows, cols);
+  if (rows != matrix.extent(0) || cols != matrix.extent(1))
+    throw std::runtime_error("File dimensions do not match pre-allocated matrix dimensions");
+
+  file.read(reinterpret_cast<char*>(host_matrix.data_handle()), rows * cols * sizeof(uint32_t));
+  file.close();
+
+	raft::copy(matrix.data_handle(),
+						host_matrix.data_handle(),
+						host_matrix.size(),
+						raft::resource::get_cuda_stream(res));
+}
+
+void generate_ground_truth(raft::resources const& res,
+													raft::device_matrix_view<const float, int64_t> dataset,
+													raft::device_matrix_view<const float, int64_t> queries,
+													const std::vector<std::vector<int>>& label_data_vecs,
+													const std::vector<std::vector<int>>& query_label_vecs,
+													raft::device_matrix_view<uint32_t, int64_t> gt_neighbors,
+													raft::device_matrix_view<float, int64_t> gt_distances,
+													std::string gt_fname = " ") {
+  
+	std::ifstream file(gt_fname);
+	if (file.good()) {
+		load_matrix_from_ibin(res, gt_fname, gt_neighbors);
+		return;
+	}
+	
+	// Part 1: Generate bitmap for filtered search
+  int64_t n_queries = query_label_vecs.size();
+  int64_t n_database = dataset.extent(0);
+	int64_t words_per_row = (n_database + 31) / 32;  // Round up to nearest 32 bits
+
+	auto bitmap = raft::make_device_matrix<uint32_t, int64_t>(res, n_queries, words_per_row);
+  
+  // Clear the bitmap
+  RAFT_CUDA_TRY(cudaMemsetAsync(
+      bitmap.data_handle(),
+      0,
+      bitmap.size() * sizeof(uint32_t),
+      raft::resource::get_cuda_stream(res)));
+  
+  // For each query, set bits for data points that match its label
+  for (int64_t q_idx = 0; q_idx < n_queries; q_idx++) {
+    const auto& query_labels = query_label_vecs[q_idx];
+    for (int label : query_labels) {
+      const auto& matching_data_points = label_data_vecs[label];
+      std::vector<uint32_t> h_matching_bits(bitmap.extent(1), 0);
+      for (int data_idx : matching_data_points) {
+        if (data_idx >= n_database) continue;
+        int word_idx = data_idx / 32;
+        int bit_pos = data_idx % 32;
+        h_matching_bits[word_idx] |= (1u << bit_pos);
+      }
+      raft::update_device(bitmap.data_handle() + q_idx * bitmap.extent(1),
+                          h_matching_bits.data(),
+                          bitmap.extent(1),
+                          raft::resource::get_cuda_stream(res));
+    }
+  }
+  
+  // Build brute force index
+  auto bf_index = cuvs::neighbors::brute_force::build(res,
+                                                     dataset,
+                                                     cuvs::distance::DistanceType::L2Expanded);
+  
+  // Create bitmap view and filter for brute force search
+  auto bitmap_view = raft::core::bitmap_view<const uint32_t, int64_t>(
+      bitmap.data_handle(), n_queries, n_database);
+  auto filter = cuvs::neighbors::filtering::bitmap_filter<const uint32_t, int64_t>(bitmap_view);
+  
+  // Temporary storage for int64_t neighbors
+  auto temp_neighbors = raft::make_device_matrix<int64_t, int64_t>(res, queries.extent(0), gt_neighbors.extent(1));
+  
+  // Perform filtered exact search
+  cuvs::neighbors::brute_force::search(res,
+                                      bf_index,
+                                      queries,
+                                      temp_neighbors.view(),
+                                      gt_distances,
+                                      filter);
+  raft::resource::sync_stream(res);
+
+  convert_neighbors_to_uint32(res, temp_neighbors.data_handle(), gt_neighbors.data_handle(), n_queries, gt_neighbors.extent(1));
+	save_matrix_to_ibin(res, gt_fname, gt_neighbors);
+  std::cout << "Generated filtered ground truth for " << n_queries << " queries" << std::endl;
+}
+
+void compute_recall(const raft::resources& res,
+                    raft::device_matrix_view<uint32_t, int64_t> neighbors,
+                    raft::device_matrix_view<uint32_t, int64_t> gt_indices) {
+  
   int n_queries = neighbors.extent(0);
   int topk = neighbors.extent(1);
-	auto h_neighbors = raft::make_host_matrix<uint32_t, int64_t>(n_queries, topk);
-	raft::copy(h_neighbors.data_handle(),
-						 neighbors.data_handle(),
-						 n_queries * topk,
-						 raft::resource::get_cuda_stream(res));
+  
+  // Create host matrices for both neighbors and ground truth
+  auto h_neighbors = raft::make_host_matrix<uint32_t, int64_t>(n_queries, topk);
+  auto h_gt = raft::make_host_matrix<uint32_t, int64_t>(n_queries, topk);
+  
+  // Copy data from device to host
+  raft::copy(h_neighbors.data_handle(),
+             neighbors.data_handle(),
+             n_queries * topk,
+             raft::resource::get_cuda_stream(res));
+  
+  raft::copy(h_gt.data_handle(),
+             gt_indices.data_handle(),
+             n_queries * topk,
+             raft::resource::get_cuda_stream(res));
+  
+  // Synchronize to ensure copies are complete
+  RAFT_CUDA_TRY(cudaStreamSynchronize(raft::resource::get_cuda_stream(res)));
+  
   float total_recall = 0.0f;
 
   for (int i = 0; i < n_queries; i++) {
@@ -162,21 +285,24 @@ void compute_recall(const raft::resources& res,
     // Count matches between found and ground truth neighbors
     for (int j = 0; j < topk; j++) {
       uint32_t neighbor_idx = h_neighbors.view()(i, j);
-      if (std::find(gt_indices[i].begin(), 
-                  gt_indices[i].begin() + topk, 
-                  neighbor_idx) != 
-        gt_indices[i].begin() + topk) {
-        matches++;
+      
+      // Check if neighbor_idx is in the ground truth
+      for (int k = 0; k < topk; k++) {
+        if (neighbor_idx == h_gt.view()(i, k)) {
+          matches++;
+          break;
+        }
       }
     }
     
     float recall = static_cast<float>(matches) / topk;
     total_recall += recall;
   }
+  
   // Print summary statistics
   std::cout << "Overall recall (" << n_queries << " queries): " 
-          << std::fixed << std::setprecision(6) 
-          << total_recall / n_queries << std::endl;
+            << std::fixed << std::setprecision(6) 
+            << total_recall / n_queries << std::endl;
 }
 
 void txt2spmat(const std::string& input_file, const std::string& output_file) {

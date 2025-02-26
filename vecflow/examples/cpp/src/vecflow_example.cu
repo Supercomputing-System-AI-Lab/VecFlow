@@ -128,7 +128,15 @@ int main(int argc, char** argv) {
   printf("- Average per search: %.2f ms\n", avg_ms);
   printf("- QPS: %.2f\n", qps);
   
-  std::vector<std::vector<uint32_t>> gt_indices;
-  read_ground_truth_file(gt_fname, gt_indices);
-  compute_recall(idx.res, neighbors.view(), gt_indices);
+  auto gt_neighbors = raft::make_device_matrix<uint32_t, int64_t>(idx.res, queries.extent(0), topk);
+  auto gt_distances = raft::make_device_matrix<float, int64_t>(idx.res, queries.extent(0), topk);
+  generate_ground_truth(idx.res,
+                        raft::make_const_mdspan(dataset.view()),
+                        raft::make_const_mdspan(queries.view()),
+                        label_data_vecs,
+                        query_label_vecs,
+                        gt_neighbors.view(),
+                        gt_distances.view(),
+                        gt_fname);
+  compute_recall(idx.res, neighbors.view(), gt_neighbors.view());
 }
