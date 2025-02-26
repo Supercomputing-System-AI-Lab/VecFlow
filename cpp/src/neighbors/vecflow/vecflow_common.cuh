@@ -318,31 +318,35 @@ inline void merge_search_results(raft::resources const& res,
   // Launch kernels for both BFS and CAGRA results
   int block_size = 256;
   
-  // BFS kernel - handles conversion and merging in one step
-  int n_bfs_elements = query_info.bfs_query_map.size() * topk;
-  int grid_size_bfs = (n_bfs_elements + block_size - 1) / block_size;
+  if (query_info.bfs_query_map.size() > 0) {
+    // BFS kernel - handles conversion and merging in one step
+    int n_bfs_elements = query_info.bfs_query_map.size() * topk;
+    int grid_size_bfs = (n_bfs_elements + block_size - 1) / block_size;
+    
+    merge_neighbors_kernel<T, int64_t><<<grid_size_bfs, block_size, 0, stream>>>(
+      neighbors.data_handle(),
+      distances.data_handle(),
+      bfs_neighbors.data_handle(),  // Direct use of int64_t input
+      bfs_distances.data_handle(),
+      query_info.bfs_query_map.data_handle(),
+      query_info.bfs_query_map.size(),
+      topk);
+  }
   
-  merge_neighbors_kernel<T, int64_t><<<grid_size_bfs, block_size, 0, stream>>>(
-    neighbors.data_handle(),
-    distances.data_handle(),
-    bfs_neighbors.data_handle(),  // Direct use of int64_t input
-    bfs_distances.data_handle(),
-    query_info.bfs_query_map.data_handle(),
-    query_info.bfs_query_map.size(),
-    topk);
-  
-  // CAGRA kernel
-  int n_cagra_elements = query_info.cagra_query_map.size() * topk;
-  int grid_size_cagra = (n_cagra_elements + block_size - 1) / block_size;
-  
-  merge_neighbors_kernel<T, uint32_t><<<grid_size_cagra, block_size, 0, stream>>>(
-    neighbors.data_handle(),
-    distances.data_handle(),
-    cagra_neighbors.data_handle(),
-    cagra_distances.data_handle(),
-    query_info.cagra_query_map.data_handle(),
-    query_info.cagra_query_map.size(),
-    topk);
+  if (query_info.cagra_query_map.size() > 0) {
+    // CAGRA kernel
+    int n_cagra_elements = query_info.cagra_query_map.size() * topk;
+    int grid_size_cagra = (n_cagra_elements + block_size - 1) / block_size;
+    
+    merge_neighbors_kernel<T, uint32_t><<<grid_size_cagra, block_size, 0, stream>>>(
+      neighbors.data_handle(),
+      distances.data_handle(),
+      cagra_neighbors.data_handle(),
+      cagra_distances.data_handle(),
+      query_info.cagra_query_map.data_handle(),
+      query_info.cagra_query_map.size(),
+      topk);
+  }
 }
 
 } // namespace cuvs::neighbors::vecflow
