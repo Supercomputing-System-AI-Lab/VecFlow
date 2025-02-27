@@ -61,14 +61,12 @@ gdown https://drive.google.com/drive/folders/1v4PfcefSKQvJzDz_5BnRzaPSIk4CEQ_S?u
 ```
 
 The dataset contains:
-* `sift.base.fbin`: Base vectors (1M vectors, 128 dimensions)
-* `sift.base.spmat` or `sift.base.txt`: Labels for base vectors (binary or text format)
-* `sift.query.fbin`: Query vectors for testing
-* `sift.query.spmat` or `sift.query.txt`: Labels for query vectors (binary or text format)
-* `sift.groundtruth.neighbors.ibin`: Ground truth neighbors for evaluating recall
-* `sift.groundtruth.distances.fbin`: Ground truth distances
+* `base.fbin`: Base vectors (1M vectors, 128 dimensions)
+* `base.spmat` or `base.txt`: Labels for base vectors (spmat or text format)
+* `query.fbin`: Query vectors for testing
+* `query.spmat` or `query.txt`: Labels for query vectors (spmat or text format)
 
-#### Binary Label Format (.spmat)
+#### Spmat Label Format (.spmat)
 The .spmat files store labels in binary format with three sequential parts:
 1. Header (three 64-bit integers):
    - nrow: Number of data points, where each point has multiple labels
@@ -92,32 +90,77 @@ We also support a text-based label format (.txt):
 
 #### Utility Functions
 For conversion and loading utilities, see:
-- Python: [txt2spmat](https://github.com/Supercomputing-System-AI-Lab/VecFlow/blob/test/vecflow/examples/python/vecflow_example.py#L52) in vecflow_example.py 
-- C++: [txt2spmat](https://github.com/Supercomputing-System-AI-Lab/VecFlow/blob/test/vecflow/examples/cpp/src/common.cuh#L182) in common.cuh
+- Python: [txt2spmat](https://github.com/Supercomputing-System-AI-Lab/VecFlow/blob/test/vecflow/examples/python/vecflow_example.py#L51) in vecflow_example.py 
+- C++: [txt2spmat](https://github.com/Supercomputing-System-AI-Lab/VecFlow/blob/test/vecflow/examples/cpp/src/common.cuh#L312) in common.cuh
 - For loading spmat files, see [vecflow_example.py](https://github.com/Supercomputing-System-AI-Lab/VecFlow/blob/test/vecflow/examples/python/vecflow_example.py#L17)
+
+The ground truth generation utilities, see:
+- Python: [generate_ground_truth](https://github.com/Supercomputing-System-AI-Lab/VecFlow/blob/test/vecflow/examples/python/vecflow_example.py#L253) in vecflow_example.py 
+- C++: [generate_ground_truth](https://github.com/Supercomputing-System-AI-Lab/VecFlow/blob/test/vecflow/examples/cpp/src/common.cuh#L185) in common.cuh
+- `generate_ground_truth`: A function to generate and save ground truth for evaluation
+
+### Configuration and Indexing
+
+#### Configuration Parameters
+Both Python and C++ examples use a consistent JSON configuration:
+
+```json
+{
+  "data_dir": "../../data/sift1M/",
+  "data_fname": "base.fbin",
+  "query_fname": "query.fbin",
+  "data_label_fname": "base.txt",
+  "query_label_fname": "query.txt",
+  "itopk_size": 32,
+  "spec_threshold": 1000,
+  "graph_degree": 16,
+  "topk": 10,
+  "num_runs": 1000,
+  "warmup_runs": 10
+}
+```
+
+Parameter explanations:
+- data_dir: Dataset directory
+- data_fname: Base vectors filename
+- query_fname: Query vectors filename
+- data_label_fname: Base labels filename
+- query_label_fname: Query labels filename
+- itopk_size: Internal topk size for search
+- spec_threshold: Specificity threshold
+- graph_degree: Graph degree for index
+- topk: Number of nearest neighbors to retrieve
+- num_runs: Benchmark runs
+- warmup_runs: Warmup runs
+
+#### Cached Indexing and Evaluation Files
+VecFlow generates three key files to optimize performance and evaluation:
+
+1. **IVF-CAGRA Index** (`ivf_cagra_{graph_degree}_spec_{threshold}.bin`): IVF-CAGRA index file for data with high specificity labels.
+
+2. **IVF-BFS Index** (`ivf_bfs_spec_{specificity_threshold}.bin`): IVF-BFS index file for data with low specificity labels.
+
+3. **Ground Truth Neighbors** (`groundtruth.neighbors.{topk}.ibin`): Stores exact nearest neighbors for benchmark evaluation.
+
+These files are automatically created and cached, reducing initialization time for repeated experiments.
 
 ### Running the Python Example
 
 ```bash
-python python/vecflow_example.py --data_dir data/ \
-                                --itopk_size 32 \
-                                --spec_threshold 1000 \
-                                --graph_degree 16
+# Run with default config file
+python python/vecflow_example.py
+
+# Or specify a custom config file
+python python/vecflow_example.py --config path/to/config.json
 ```
 
-Parameters:
+The program will:
 
-- `--data_dir`: Directory containing the dataset files
-- `--itopk_size`: Internal topk size for search (higher values increase accuracy but reduce throughput)
-- `--spec_threshold`: Specificity threshold for index building
-- `--graph_degree`: Graph degree for high-specificity index
-
-The script will:
-
-1. Load the dataset
-2. Build the dual-structured index
-3. Perform searches 
-4. Compute and report timing and recall metrics
+1. Load the dataset based on configuration
+2. Build the dual-structure index
+3. Perform warmup runs followed by benchmark runs
+4. Generate ground truth if needed
+5. Report performance metrics including throughput and recall
 
 ### Running the C++ Example
 
@@ -132,23 +175,24 @@ cmake ..
 make
 ```
 
-Run the compiled example with parameters:
+Run the compiled example with a config file:
 
 ```bash
-./VECFLOW_EXAMPLE --data_dir ../../data/ --itopk_size 32 --spec_threshold 1000 --graph_degree 16
+# Run with default config file
+./VECFLOW_EXAMPLE
+
+# Or specify a custom config file
+./VECFLOW_EXAMPLE --config path/to/config.json
 ```
 
-Parameters:
-
-- 32: Internal topk size
-- 1000: Specificity threshold
-- 16: Graph degree
+The configuration parameters are the same as those for the Python example (see above).
 
 The program will:
 
-1. Load the SIFT1M dataset
+1. Load the dataset based on configuration
 2. Build the dual-structure index
-3. Perform searches
-4. Report performance metrics including throughput and recall
+3. Perform warmup runs followed by benchmark runs
+4. Generate ground truth if needed
+5. Report performance metrics including throughput and recall
 
-Make sure you have the SIFT1M dataset files in the expected location before running the example.
+Make sure you have the dataset files in the locations specified in your config file before running the example.
