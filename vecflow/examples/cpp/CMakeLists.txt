@@ -40,9 +40,18 @@ rapids_cpm_init()
 set(BUILD_CUVS_C_LIBRARY OFF)
 include(../../cmake/thirdparty/get_cuvs.cmake)
 
+# ------------- configure nlohmann/json -----------------#
+
+rapids_cpm_find(nlohmann_json
+  VERSION 3.11.2
+  GITHUB_REPOSITORY nlohmann/json
+  OPTIONS
+    "JSON_BuildTests OFF"
+)
+
 # -------------- compile tasks ----------------- #
 add_executable(VECFLOW_EXAMPLE src/vecflow_example.cu)
 
 # `$<TARGET_NAME_IF_EXISTS:conda_env>` is a generator expression that ensures that targets are
 # installed in a conda environment, if one exists
-target_link_libraries(VECFLOW_EXAMPLE PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
+target_link_libraries(VECFLOW_EXAMPLE PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE nlohmann_json::nlohmann_json PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)

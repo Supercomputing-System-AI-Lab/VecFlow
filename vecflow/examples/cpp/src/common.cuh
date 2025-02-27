@@ -9,14 +9,13 @@ void read_labeled_data(std::string data_fname,
 											 std::string data_label_fname, 
 											 std::string query_fname, 
 											 std::string query_label_fname, 
-											 std::vector<T>* data, 
-											 std::vector<std::vector<int>>* data_labels, 
+											 std::vector<T>* data,
+                       std::vector<T>* queries,
 											 std::vector<std::vector<int>>* labels_data, 
-											 std::vector<T>* queries, 
-											 std::vector<std::vector<int>>* query_labels, 
-											 std::vector<int>* cat_freq, 
-											 std::vector<int>* query_freq, 
-											 int max_N) {
+											 std::vector<std::vector<int>>* query_labels,
+                       uint32_t* N_out,
+                       uint32_t* q_N_out,
+                       uint32_t* dim_out) {
 
 	// Read datafile in
 	std::ifstream datafile(data_fname, std::ifstream::binary);
@@ -26,7 +25,6 @@ void read_labeled_data(std::string data_fname,
 	uint32_t N, dim;
 	datafile.read(reinterpret_cast<char*>(&N), sizeof(uint32_t));
 	datafile.read(reinterpret_cast<char*>(&dim), sizeof(uint32_t));
-	if (N > static_cast<uint32_t>(max_N)) N = max_N;
 	data->resize(N*dim);
 	datafile.read(reinterpret_cast<char*>(data->data()), N*dim*sizeof(T));
 	datafile.close();
@@ -65,18 +63,14 @@ void read_labeled_data(std::string data_fname,
 		throw std::runtime_error("Invalid indices in data labels");
 	}
 	labelfile.close();
-	data_labels->reserve(N);
 	labels_data->reserve(ncol);
 	labels_data->resize(ncol);
-	cat_freq->resize(ncol, 0);
 	for (uint32_t i = 0; i < N; ++i) {
 		std::vector<int> label_list;
 		for (int64_t j = indptr[i]; j < indptr[i+1]; ++j) {
 			label_list.push_back(indices[j]);
-			(*cat_freq)[indices[j]]++;
 			(*labels_data)[indices[j]].push_back(i);
 		}
-		data_labels->push_back(std::move(label_list));
 	}
 
 	// read labels for queries
@@ -103,15 +97,25 @@ void read_labeled_data(std::string data_fname,
 	}
 	qlabelfile.close();
 	query_labels->reserve(q_N);
-	query_freq->resize(ncol, 0);
 	for (uint32_t i = 0; i < q_N; ++i) {
 		std::vector<int> label_list;
 		for (int64_t j = indptr[i]; j < indptr[i+1]; ++j) {
-			label_list.push_back(indices[j]);
-			(*query_freq)[indices[j]]++;
+      int label = indices[j];
+      // Ensure the label is in the range of dataset labels
+      if (label < 0 || label >= labels_data->size()) {
+        throw std::runtime_error("Query label " + std::to_string(label) + 
+                              " at query index " + std::to_string(i) + 
+                              " is outside the range of dataset labels (0 to " + 
+                              std::to_string(labels_data->size() - 1) + ")");
+      }
+      label_list.push_back(label);
 		}
 		query_labels->push_back(std::move(label_list));
 	}
+
+  if (N_out != nullptr) *N_out = N;
+  if (q_N_out != nullptr) *q_N_out = q_N;
+  if (dim_out != nullptr) *dim_out = dim;
 }
 
 __global__ void convert_int64_to_uint32(const int64_t* input, uint32_t* output, int n) {
@@ -184,8 +188,7 @@ void generate_ground_truth(raft::resources const& res,
 													const std::vector<std::vector<int>>& label_data_vecs,
 													const std::vector<std::vector<int>>& query_label_vecs,
 													raft::device_matrix_view<uint32_t, int64_t> gt_neighbors,
-													raft::device_matrix_view<float, int64_t> gt_distances,
-													std::string gt_fname = " ") {
+													std::string gt_fname) {
   
 	std::ifstream file(gt_fname);
 	if (file.good()) {
@@ -240,11 +243,12 @@ void generate_ground_truth(raft::resources const& res,
   auto temp_neighbors = raft::make_device_matrix<int64_t, int64_t>(res, queries.extent(0), gt_neighbors.extent(1));
   
   // Perform filtered exact search
+  auto gt_distances = raft::make_device_matrix<float, int64_t>(res, queries.extent(0), gt_neighbors.extent(1));
   cuvs::neighbors::brute_force::search(res,
                                       bf_index,
                                       queries,
                                       temp_neighbors.view(),
-                                      gt_distances,
+                                      gt_distances.view(),
                                       filter);
   raft::resource::sync_stream(res);
 

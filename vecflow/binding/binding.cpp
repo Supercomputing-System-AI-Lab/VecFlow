@@ -17,7 +17,11 @@ PYBIND11_MODULE(vecflow, m) {
 			py::arg("queries"),
 			py::arg("query_labels"),
 			py::arg("itopk_size"))
-		.def("compute_recall", &PyVecFlow::compute_recall,
-			py::arg("neighbors"),
-			py::arg("gt_indices"));
+		.def("generate_ground_truth", &PyVecFlow::generate_ground_truth,
+			py::arg("dataset"),
+			py::arg("queries"),
+			py::arg("topk"),
+			py::arg("data_label_fname"),
+			py::arg("query_label_fname"),
+			py::arg("gt_fname"));
 }

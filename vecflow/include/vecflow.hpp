@@ -11,9 +11,12 @@ using namespace cuvs::neighbors;
 class PyVecFlow {
 
 private:
-  static vecflow::index<float> idx;
+  vecflow::index<float> idx;
 
 public:
+  PyVecFlow() {
+    raft::resource::sync_stream(idx.res);
+  }
 
   void build(py::array_t<float> dataset,
             std::string data_label_fname,
@@ -27,5 +30,11 @@ public:
         py::array_t<int> query_labels,
         int itopk_size);
   
-  float compute_recall(py::array_t<uint32_t> neighbors, py::array_t<uint32_t> gt_indices);
+  py::array_t<uint32_t>
+  generate_ground_truth(py::array_t<float> dataset,
+                       py::array_t<float> queries,
+                       int64_t topk,
+                       std::string data_label_fname,
+                       std::string query_label_fname,
+                       std::string gt_fname);
 };

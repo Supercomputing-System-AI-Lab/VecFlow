@@ -1,0 +1,13 @@
+{
+  "data_dir": "../data/sift1M/",
+  "data_fname": "base.fbin",
+  "query_fname": "query.fbin",
+  "data_label_fname": "base.txt",
+  "query_label_fname": "query.txt",
+  "itopk_size": 32,
+  "spec_threshold": 1000,
+  "graph_degree": 16,
+  "topk": 10,
+  "num_runs": 1000,
+  "warmup_runs": 10
+}

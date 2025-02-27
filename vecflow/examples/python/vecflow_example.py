@@ -3,6 +3,7 @@ from vecflow import VecFlow
 import time
 import os
 import argparse
+import json
 
 def load_fbin(fname):
   """Load float32 binary file."""
@@ -52,7 +53,6 @@ def txt2spmat(input_file, output_file):
     Convert a text file with label lists to spmat format
     - Each input line contains comma-separated label indices
     - Lines with "-1" indicate no labels for that row
-    - All labels are decremented by 1 to convert from 1-indexed to 0-indexed
     """
     with open(input_file, 'r') as f:
       lines = f.readlines()
@@ -92,57 +92,123 @@ def txt2spmat(input_file, output_file):
       indptr.tofile(f)
       indices.tofile(f)
 
-def load_groundtruth(fname):
-  """Load groundtruth from binary file."""
-  gt_indices = []
-  with open(fname, "rb") as f:
-    rows = np.fromfile(f, dtype=np.int64, count=1)[0]
-    cols = np.fromfile(f, dtype=np.int64, count=1)[0]
-    data = np.fromfile(f, dtype=np.uint32, count=rows * cols)
-    data = data.reshape(rows, cols)
-    for i in range(rows):
-      gt_indices.append(data[i].tolist())
-  return gt_indices
+def compute_recall(neighbors, gt_indices):
+  """
+  Compute recall of search results against ground truth.
+  
+  Parameters:
+  -----------
+  neighbors : numpy.ndarray or list
+      Search results (nearest neighbor indices)
+  gt_indices : numpy.ndarray or list
+      Ground truth indices
+      
+  Returns:
+  --------
+  float
+      Average recall
+  """
+  if isinstance(neighbors, list):
+    neighbors = np.array(neighbors)
+  if isinstance(gt_indices, list):
+    gt_indices = np.array(gt_indices)
+  
+  # Get dimensions
+  n_queries = neighbors.shape[0]
+  if n_queries == 0:
+    return 0.0
+  
+  if len(neighbors.shape) == 2 and len(gt_indices.shape) == 2:
+    # Compute recall for each query
+    recalls = np.zeros(n_queries)
+    for i in range(n_queries):
+      # Convert to set for efficient intersection
+      neighbors_set = set(neighbors[i])
+      gt_set = set(gt_indices[i])
+      
+      if len(gt_set) == 0:
+        recalls[i] = 1.0  # If no ground truth, count as perfect recall
+      else:
+        # Compute intersection size
+        intersection_size = len(neighbors_set.intersection(gt_set))
+        recalls[i] = intersection_size / len(gt_set)
+    
+    # Return average recall across all queries
+    return np.mean(recalls)
+  else:
+    raise ValueError("Both neighbors and gt_indices must be 2D arrays or lists of lists")
 
 def main():
   parser = argparse.ArgumentParser(description='Test VecFlow API')
-  parser.add_argument('--data_dir', type=str, default='../data/',
-            help='Directory containing dataset files')
-  parser.add_argument('--itopk_size', type=int, default=32,
-            help='Internal topk size for search')
-  parser.add_argument('--spec_threshold', type=int, default=1000,
-            help='Specificity threshold')
-  parser.add_argument('--graph_degree', type=int, default=16,
-            help='Graph degree')
+  parser.add_argument('--config', type=str, default='config.json',
+            help='Path to configuration JSON file')
   args = parser.parse_args()
 
-  # File paths
-  base_path = os.path.join(args.data_dir, "sift1M")
-  data_fname = os.path.join(base_path, "sift.base.fbin")
-  data_label_fname = os.path.join(base_path, "sift.base.spmat")
-  query_fname = os.path.join(base_path, "sift.query.fbin")
-  query_label_fname = os.path.join(base_path, "sift.query.spmat")
-  gt_fname = os.path.join(base_path, "sift.groundtruth.neighbors.ibin")
-  
-  # Check if the binary spmat files exist and convert from text format if needed
-  if not os.path.exists(data_label_fname):
-    txt_file = os.path.join(base_path, "sift.base.txt")
-    txt2spmat(txt_file, data_label_fname)
-  if not os.path.exists(query_label_fname):
-    txt_file = os.path.join(base_path, "sift.query.txt")
-    txt2spmat(txt_file, query_label_fname)
+  # Load configuration
+  try:
+    print(f"Loading configuration from {args.config}")
+    with open(args.config, 'r') as f:
+      config = json.load(f)
+    
+    # Extract parameters from config
+    data_dir = config.get('data_dir')
+    data_fname = config.get('data_fname')
+    query_fname = config.get('query_fname')
+    data_label_fname = config.get('data_label_fname')
+    query_label_fname = config.get('query_label_fname')
+    itopk_size = config.get('itopk_size', 32)
+    specificity_threshold = config.get('spec_threshold', 1000)
+    graph_degree = config.get('graph_degree', 16)
+    topk = config.get('topk', 100)
+    num_runs = config.get('num_runs', 1000)
+    warmup_runs = config.get('warmup_runs', 10)
+    
+    # Construct filenames
+    spec_str = str(specificity_threshold)
+    degree_str = str(graph_degree)
+    topk_str = str(topk)
+    ivf_cagra_index_fname = f"ivf_cagra_{degree_str}_spec_{spec_str}.bin"
+    ivf_bfs_index_fname = f"ivf_bfs_spec_{spec_str}.bin"
+    ground_truth_fname = f"groundtruth.neighbors.{topk_str}.ibin"
+    
+  except Exception as e:
+    print(f"Error loading config file: {e}")
+    return
 
-  # Graph file names
-  graph_fname = os.path.join(base_path,
-              f"graph_{args.graph_degree * 2}_{args.graph_degree}_spec_{args.spec_threshold}.bin")
-  bfs_fname = os.path.join(base_path,
-              f"spec_{args.spec_threshold}.bin")
+  # Construct full file paths
+  full_data_fname = os.path.join(data_dir, data_fname)
+  full_query_fname = os.path.join(data_dir, query_fname)
+  full_data_label_fname = os.path.join(data_dir, data_label_fname)
+  full_query_label_fname = os.path.join(data_dir, query_label_fname)
+  full_ivf_cagra_index_fname = os.path.join(data_dir, ivf_cagra_index_fname)
+  full_ivf_bfs_index_fname = os.path.join(data_dir, ivf_bfs_index_fname)
+  full_ground_truth_fname = os.path.join(data_dir, ground_truth_fname)
+  
+  # Print configuration 
+  print("\n=== Configuration ===")
+  print(f"iTopK size: {itopk_size}")
+  print(f"Specificity threshold: {specificity_threshold}")
+  print(f"Graph degree: {graph_degree}")
+  print(f"TopK: {topk}")
+  print(f"Number of runs: {num_runs}")
+  print(f"Warmup runs: {warmup_runs}")
+
+  # Convert labels format if needed
+  data_label_spmat = full_data_label_fname.replace('.txt', '.spmat')
+  query_label_spmat = full_query_label_fname.replace('.txt', '.spmat')
+  
+  if not os.path.exists(data_label_spmat):
+    print("Converting data labels from text to spmat format...")
+    txt2spmat(full_data_label_fname, data_label_spmat)
+  
+  if not os.path.exists(query_label_spmat):
+    print("Converting query labels from text to spmat format...")
+    txt2spmat(full_query_label_fname, query_label_spmat)
 
   print("\n=== Loading Dataset ===")
-  dataset = load_fbin(data_fname)
-  queries = load_fbin(query_fname)
-  query_labels, _ = load_labels(query_label_fname)
-  gt_indices = load_groundtruth(gt_fname)
+  dataset = load_fbin(full_data_fname)
+  queries = load_fbin(full_query_fname)
+  query_labels, _ = load_labels(query_label_spmat)
 
   print(f"Base dataset size: {dataset.shape}")
   print(f"Query dataset size: {queries.shape}")
@@ -154,35 +220,45 @@ def main():
   print("\n=== Building Index ===")
   start_time = time.time()
   vf.build(dataset,
-           data_label_fname,
-           args.graph_degree,
-           args.spec_threshold,
-           graph_fname,
-           bfs_fname)
+           data_label_spmat,
+           graph_degree,
+           specificity_threshold,
+           full_ivf_cagra_index_fname,
+           full_ivf_bfs_index_fname)
   build_time = time.time() - start_time
   print(f"Index building time: {build_time:.2f} seconds")
 
-  # Search
+  # Extract the first label for each query or use -1 if no labels
+  query_label_arr = np.array([labels[0] if labels else -1 for labels in query_labels])
+  
+  # Search with warmup
   print("\n=== Performing Search ===")
-  query_labels = np.array([i[0] for i in query_labels])
-  for i in range(10):
-      _, _ = vf.search(queries, query_labels, args.itopk_size)
-  num_searches = 1000
+  # Warm-up runs
+  for i in range(warmup_runs):
+    _, _ = vf.search(queries, query_label_arr, itopk_size)
+  
+  # Benchmark runs
   start_time = time.perf_counter()
-  for _ in range(num_searches):
-      neighbors, distances = vf.search(queries, query_labels, args.itopk_size)
+  for _ in range(num_runs):
+    neighbors, distances = vf.search(queries, query_label_arr, itopk_size)
   total_time = time.perf_counter() - start_time
-  avg_ms = (total_time * 1000) / num_searches
-  qps = num_searches * queries.shape[0] / total_time
-  print(f"Search timing ({num_searches} runs):")
+  avg_ms = (total_time * 1000) / num_runs
+  qps = num_runs * queries.shape[0] / total_time
+  print(f"Search timing ({num_runs} runs):")
   print(f"- Total time: {total_time*1000:.2f} ms")
   print(f"- Average per search: {avg_ms:.2f} ms")
   print(f"- QPS: {qps:.2f}")
 
+  # Generate or load ground truth
+  gt_indices = vf.generate_ground_truth(dataset, 
+                                        queries, 
+                                        topk,
+                                        data_label_spmat, 
+                                        query_label_spmat, 
+                                        full_ground_truth_fname)
   # Compute recall
-  print("\n=== Computing Recall ===")
-  recall = vf.compute_recall(neighbors, np.array(gt_indices))
-  print(f"Overall recall: {recall:.6f}")
+  recall = compute_recall(neighbors, gt_indices)
+  print(f"Overall recall ({queries.shape[0]} queries): {recall:.6f}")
 
 if __name__ == "__main__":
   main()
