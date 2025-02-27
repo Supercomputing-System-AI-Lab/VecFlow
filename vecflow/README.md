@@ -4,6 +4,19 @@ VecFlow is a high-performance vector data management system for filtered-search 
 
 VecFlow introduces the concept of "label specificity" - the number of data points associated with a particular label. Using a configurable specificity threshold T, it builds a dual-structured index: an IVF-CAGRA index for data points with labels that appear frequently (high specificity, ≥ T points), and an IVF-BFS index with interleaved vector storage for rare data points (low specificity, < T points). This dual-index approach optimizes GPU memory access patterns and achieves high performance across varying label distributions.
 
+## Recent News
+
+* [2/27/2025] ⚙️ Introduced JSON-based configuration files for easier parameter management
+* [2/25/2025] 🔍 Added support for ground truth generator to help with results validation and benchmarking
+* [2/19/2025] 🎉 Added support for text label format (.txt) with txt2spmat converter to help users easily migrate from text-based label systems
+* [2/12/2025] 🚀 VecFlow v0.1 released - introducing the dual-structured index approach for filtered vector search on GPUs
+
+<details>
+<summary><strong>Show older updates</strong></summary>
+
+</details>
+
+
 ## Features
 
 - Built on NVIDIA's cuVS library for high-performance vector search
