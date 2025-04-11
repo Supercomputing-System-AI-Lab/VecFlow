@@ -51,7 +51,9 @@ rapids_cpm_find(nlohmann_json
 
 # -------------- compile tasks ----------------- #
 add_executable(VECFLOW_EXAMPLE src/vecflow_example.cu)
+add_executable(VECFLOW_BENCH src/bench/vecflow_bench.cu)
 
 # `$<TARGET_NAME_IF_EXISTS:conda_env>` is a generator expression that ensures that targets are
 # installed in a conda environment, if one exists
 target_link_libraries(VECFLOW_EXAMPLE PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE nlohmann_json::nlohmann_json PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
+target_link_libraries(VECFLOW_BENCH PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE nlohmann_json::nlohmann_json PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)

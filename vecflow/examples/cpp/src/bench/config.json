@@ -1,0 +1,19 @@
+{
+  "data_dir": "../../data/sift1M/",
+  "data_fname": "base.fbin",
+  "query_fname": "query.fbin",
+  "data_label_fname": "base.txt",
+  "query_label_fname": "query.txt",
+  "algorithms_to_run": ["vecflow", "cagra_inline_filtering", "cagra_post_processing"],
+  "itopk_size": [8, 16, 32, 64, 128, 256, 512],
+  "spec_threshold": 2000,
+  "graph_degree": 16,
+  "topk": 10,
+  "num_runs": 1000,
+  "warmup_runs": 10,
+  "ivf_cagra_index_fname": "ivf_cagra_16_spec_2000.bin",
+  "ivf_bfs_index_fname": "ivf_bfs_spec_2000.bin",
+  "cagra_index_fname": "cagra_16.bin",
+  "ground_truth_fname": "ground_truth_10.bin",
+  "output_json_file": "/u/cmo1/Filtered/VecFlow/vecflow/examples/cpp/src/bench/results.json"
+}
