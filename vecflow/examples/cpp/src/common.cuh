@@ -5,13 +5,13 @@
 #include <cuvs/neighbors/brute_force.hpp>
 
 template<typename T, typename idxT>
-void read_labeled_data(std::string data_fname, 
-											 std::string data_label_fname, 
-											 std::string query_fname, 
-											 std::string query_label_fname, 
+void read_labeled_data(std::string data_fname,
+											 std::string data_label_fname,
+											 std::string query_fname,
+											 std::string query_label_fname,
 											 std::vector<T>* data,
 											 std::vector<T>* queries,
-											 std::vector<std::vector<int>>* labels_data, 
+											 std::vector<std::vector<int>>* labels_data,
 											 std::vector<std::vector<int>>* query_labels,
 											 uint32_t* N_out,
 											 uint32_t* q_N_out,
@@ -81,8 +81,8 @@ void read_labeled_data(std::string data_fname,
 	qlabelfile.read(reinterpret_cast<char*>(sizes.data()), 3 * sizeof(int64_t));
 	nrow = sizes[0], ncol = sizes[1], nnz = sizes[2];
 	if (q_N != nrow) {
-		throw std::runtime_error("Number of rows in queries (" + std::to_string(N) + 
-														") doesn't match number of rows in query label file (" + 
+		throw std::runtime_error("Number of rows in queries (" + std::to_string(N) +
+														") doesn't match number of rows in query label file (" +
 														std::to_string(nrow) + ")");
 	}
 	indptr.resize(nrow + 1);
@@ -103,9 +103,9 @@ void read_labeled_data(std::string data_fname,
 			int label = indices[j];
 			// Ensure the label is in the range of dataset labels
 			if (label < 0 || label >= labels_data->size()) {
-				throw std::runtime_error("Query label " + std::to_string(label) + 
-															" at query index " + std::to_string(i) + 
-															" is outside the range of dataset labels (0 to " + 
+				throw std::runtime_error("Query label " + std::to_string(label) +
+															" at query index " + std::to_string(i) +
+															" is outside the range of dataset labels (0 to " +
 															std::to_string(labels_data->size() - 1) + ")");
 			}
 			label_list.push_back(label);
@@ -133,7 +133,7 @@ void convert_neighbors_to_uint32(raft::resources const& res,
 	int total_elements = n_queries * k;
 	int block_size = 256;
 	int grid_size = (total_elements + block_size - 1) / block_size;
-	
+
 	convert_int64_to_uint32<<<grid_size, block_size, 0, raft::resource::get_cuda_stream(res)>>>(
 			input, output, total_elements);
 }
@@ -141,7 +141,7 @@ void convert_neighbors_to_uint32(raft::resources const& res,
 void save_matrix_to_ibin(raft::resources const& res,
 												std::string& filename,
 												raft::device_matrix_view<uint32_t, int64_t>& matrix) {
-	
+
 	int32_t rows = matrix.extent(0);
 	int32_t cols = matrix.extent(1);
 
@@ -150,7 +150,7 @@ void save_matrix_to_ibin(raft::resources const& res,
 						matrix.data_handle(),
 						matrix.size(),
 						raft::resource::get_cuda_stream(res));
-	
+
 	std::ofstream file(filename, std::ios::binary);
 	if (!file) throw std::runtime_error("Cannot create file: " + filename);
 	file.write(reinterpret_cast<const char*>(&rows), sizeof(int32_t));
@@ -189,27 +189,27 @@ void generate_ground_truth(raft::resources const& res,
 													const std::vector<std::vector<int>>& query_label_vecs,
 													raft::device_matrix_view<uint32_t, int64_t> gt_neighbors,
 													std::string gt_fname) {
-	
+
 	std::ifstream file(gt_fname);
 	if (file.good()) {
 		load_matrix_from_ibin(res, gt_fname, gt_neighbors);
 		return;
 	}
-	
+
 	// Part 1: Generate bitmap for filtered search
 	int64_t n_queries = query_label_vecs.size();
 	int64_t n_database = dataset.extent(0);
 	int64_t words_per_row = (n_database + 31) / 32;  // Round up to nearest 32 bits
 
 	auto bitmap = raft::make_device_matrix<uint32_t, int64_t>(res, n_queries, words_per_row);
-	
+
 	// Clear the bitmap
 	RAFT_CUDA_TRY(cudaMemsetAsync(
 			bitmap.data_handle(),
 			0,
 			bitmap.size() * sizeof(uint32_t),
 			raft::resource::get_cuda_stream(res)));
-	
+
 	// For each query, set bits for data points that match its label
 	for (int64_t q_idx = 0; q_idx < n_queries; q_idx++) {
 		const auto& query_labels = query_label_vecs[q_idx];
@@ -228,20 +228,20 @@ void generate_ground_truth(raft::resources const& res,
 													raft::resource::get_cuda_stream(res));
 		}
 	}
-	
+
 	// Build brute force index
 	auto bf_index = cuvs::neighbors::brute_force::build(res,
 																										 dataset,
 																										 cuvs::distance::DistanceType::L2Expanded);
-	
+
 	// Create bitmap view and filter for brute force search
 	auto bitmap_view = raft::core::bitmap_view<const uint32_t, int64_t>(
 			bitmap.data_handle(), n_queries, n_database);
 	auto filter = cuvs::neighbors::filtering::bitmap_filter<const uint32_t, int64_t>(bitmap_view);
-	
+
 	// Temporary storage for int64_t neighbors
 	auto temp_neighbors = raft::make_device_matrix<int64_t, int64_t>(res, queries.extent(0), gt_neighbors.extent(1));
-	
+
 	// Perform filtered exact search
 	auto gt_distances = raft::make_device_matrix<float, int64_t>(res, queries.extent(0), gt_neighbors.extent(1));
 	cuvs::neighbors::brute_force::search(res,
@@ -257,31 +257,31 @@ void generate_ground_truth(raft::resources const& res,
 	std::cout << "Generated filtered ground truth for " << n_queries << " queries" << std::endl;
 }
 
-void compute_recall(const raft::resources& res,
-										raft::device_matrix_view<uint32_t, int64_t> neighbors,
-										raft::device_matrix_view<uint32_t, int64_t> gt_indices) {
-	
+double compute_recall(const raft::resources& res,
+                      raft::device_matrix_view<uint32_t, int64_t> neighbors,
+                      raft::device_matrix_view<uint32_t, int64_t> gt_indices) {
+
 	int n_queries = neighbors.extent(0);
 	int topk = neighbors.extent(1);
-	
+
 	// Create host matrices for both neighbors and ground truth
 	auto h_neighbors = raft::make_host_matrix<uint32_t, int64_t>(n_queries, topk);
 	auto h_gt = raft::make_host_matrix<uint32_t, int64_t>(n_queries, topk);
-	
+
 	// Copy data from device to host
 	raft::copy(h_neighbors.data_handle(),
 						 neighbors.data_handle(),
 						 n_queries * topk,
 						 raft::resource::get_cuda_stream(res));
-	
+
 	raft::copy(h_gt.data_handle(),
 						 gt_indices.data_handle(),
 						 n_queries * topk,
 						 raft::resource::get_cuda_stream(res));
-	
+
 	// Synchronize to ensure copies are complete
 	RAFT_CUDA_TRY(cudaStreamSynchronize(raft::resource::get_cuda_stream(res)));
-	
+
 	float total_recall = 0.0f;
 
 	for (int i = 0; i < n_queries; i++) {
@@ -289,7 +289,7 @@ void compute_recall(const raft::resources& res,
 		// Count matches between found and ground truth neighbors
 		for (int j = 0; j < topk; j++) {
 			uint32_t neighbor_idx = h_neighbors.view()(i, j);
-			
+
 			// Check if neighbor_idx is in the ground truth
 			for (int k = 0; k < topk; k++) {
 				if (neighbor_idx == h_gt.view()(i, k)) {
@@ -298,15 +298,13 @@ void compute_recall(const raft::resources& res,
 				}
 			}
 		}
-		
+
 		float recall = static_cast<float>(matches) / topk;
 		total_recall += recall;
 	}
-	
-	// Print summary statistics
-	std::cout << "Overall recall (" << n_queries << " queries): " 
-						<< std::fixed << std::setprecision(6) 
-						<< total_recall / n_queries << std::endl;
+
+  double recall = static_cast<double>(total_recall) / static_cast<double>(n_queries);
+  return recall;
 }
 
 void txt2spmat(const std::string& input_file, const std::string& output_file) {
@@ -323,7 +321,7 @@ void txt2spmat(const std::string& input_file, const std::string& output_file) {
 		lines.push_back(line);
 	}
 	infile.close();
-	
+
 	// Parse labels from each line
 	std::vector<std::vector<int32_t>> labels_list;
 	for (const auto& line : lines) {
@@ -331,13 +329,13 @@ void txt2spmat(const std::string& input_file, const std::string& output_file) {
 		// Trim whitespace
 		trimmed_line.erase(0, trimmed_line.find_first_not_of(" \t\r\n"));
 		trimmed_line.erase(trimmed_line.find_last_not_of(" \t\r\n") + 1);
-		
+
 		if (!trimmed_line.empty() && trimmed_line != "-1") {
 			// Handle comma-separated values and decrement by 1
 			std::vector<int32_t> labels;
 			std::istringstream iss(trimmed_line);
 			std::string token;
-			
+
 			while (std::getline(iss, token, ',')) {
 				int32_t label = std::stoi(token);
 				labels.push_back(label);
@@ -348,12 +346,12 @@ void txt2spmat(const std::string& input_file, const std::string& output_file) {
 			labels_list.push_back(std::vector<int32_t>());
 		}
 	}
-	
+
 	// Calculate CSR parameters
 	int64_t nrow = labels_list.size();
 	int64_t ncol = 0;
 	int64_t nnz = 0;
-	
+
 	if (nrow > 0) {
 		// Find maximum label value
 		for (const auto& labels : labels_list) {
@@ -364,11 +362,11 @@ void txt2spmat(const std::string& input_file, const std::string& output_file) {
 			nnz += labels.size();
 		}
 	}
-	
+
 	// Build CSR representation
 	std::vector<int64_t> indptr(nrow + 1, 0);
 	std::vector<int32_t> indices(nnz, 0);
-	
+
 	int64_t idx = 0;
 	for (int64_t i = 0; i < nrow; i++) {
 		indptr[i] = idx;
@@ -377,27 +375,27 @@ void txt2spmat(const std::string& input_file, const std::string& output_file) {
 		}
 	}
 	indptr[nrow] = nnz;
-	
+
 	// Write to binary file
 	std::ofstream outfile(output_file, std::ios::binary);
 	if (!outfile) {
 		std::cerr << "Error: Could not open output file: " << output_file << std::endl;
 		return;
 	}
-	
+
 	// Write header: nrow, ncol, nnz
 	outfile.write(reinterpret_cast<const char*>(&nrow), sizeof(int64_t));
 	outfile.write(reinterpret_cast<const char*>(&ncol), sizeof(int64_t));
 	outfile.write(reinterpret_cast<const char*>(&nnz), sizeof(int64_t));
-	
+
 	// Write indptr
 	outfile.write(reinterpret_cast<const char*>(indptr.data()), (nrow + 1) * sizeof(int64_t));
-	
+
 	// Write indices
 	outfile.write(reinterpret_cast<const char*>(indices.data()), nnz * sizeof(int32_t));
-	
+
 	outfile.close();
-	
+
 	std::cout << "Converted text file to spmat format:" << std::endl
 						<< "  Rows: " << nrow << std::endl
 						<< "  Columns: " << ncol << std::endl

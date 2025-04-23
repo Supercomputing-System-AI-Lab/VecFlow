@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
 	} else {
 		config_file = argv[2];
 	}
-	
+
 	// Variables to store configuration
 	std::string data_dir;
 	std::string data_fname;
@@ -34,14 +34,14 @@ int main(int argc, char** argv) {
 	int topk;
 	int num_runs;
 	int warmup_runs;
-	
+
 	// Load configuration from file
 	std::ifstream file(config_file);
 	if (!file.is_open()) {
 		fprintf(stderr, "Unable to open config file: %s\n", config_file.c_str());
 		return 1;
 	}
-	
+
 	try {
 		printf("Loading configuration from %s\n", config_file.c_str());
 		json config;
@@ -66,12 +66,12 @@ int main(int argc, char** argv) {
 		ivf_cagra_index_fname = "ivf_cagra_" + degree_str + "_spec_" + spec_str + ".bin";
 		ivf_bfs_index_fname = "ivf_bfs_spec_" + spec_str + ".bin";
 		ground_truth_fname = "groundtruth.neighbors." + topk_str + ".ibin";
-		
+
 	} catch (const std::exception& e) {
 		fprintf(stderr, "Error parsing JSON config file: %s\n", e.what());
 		return 1;
 	}
-	
+
 	// Construct full file paths
 	std::string full_data_fname = data_dir + data_fname;
 	std::string full_query_fname = data_dir + query_fname;
@@ -80,8 +80,8 @@ int main(int argc, char** argv) {
 	std::string full_ivf_cagra_index_fname = data_dir + ivf_cagra_index_fname;
 	std::string full_ivf_bfs_index_fname = data_dir + ivf_bfs_index_fname;
 	std::string full_ground_truth_fname = data_dir + ground_truth_fname;
-	
-	// Print configuration 
+
+	// Print configuration
 	printf("\n=== Configuration ===\n");
 	printf("iTopK size: %d\n", itopk_size);
 	printf("Specificity threshold: %d\n", specificity_threshold);
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
 	printf("TopK: %d\n", topk);
 	printf("Number of runs: %d\n", num_runs);
 	printf("Warmup runs: %d\n", warmup_runs);
-	
+
 	std::string data_label_spmat = full_data_label_fname.substr(0, full_data_label_fname.find_last_of(".")) + ".spmat";
 	std::string query_label_spmat = full_query_label_fname.substr(0, full_query_label_fname.find_last_of(".")) + ".spmat";
 
@@ -103,21 +103,21 @@ int main(int argc, char** argv) {
 		std::cout << "Converting query labels from text to spmat format..." << std::endl;
 		txt2spmat(full_query_label_fname, query_label_spmat);
 	}
-	
+
 	std::vector<float> h_data;
 	std::vector<float> h_queries;
 	std::vector<std::vector<int>> label_data_vecs;
 	std::vector<std::vector<int>> query_label_vecs;
 	uint32_t N, Nq, dim;
 	read_labeled_data<float, int64_t>(full_data_fname, data_label_spmat, full_query_fname, query_label_spmat,
-																	&h_data, &h_queries, 
+																	&h_data, &h_queries,
 																	&label_data_vecs, &query_label_vecs,
 																	&N, &Nq, &dim);
-	
+
 	printf("\n=== Dataset Information ===\n");
 	printf("Base dataset size: N=%u, dim=%u\n", N, dim);
 	printf("Query dataset size: N=%u, dim=%u\n", Nq, dim);
-	
+
 	vecflow::index<float> idx;
 	auto dataset = raft::make_device_matrix<float, int64_t>(idx.res, N, dim);
 	auto queries = raft::make_device_matrix<float, int64_t>(idx.res, Nq, dim);
@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
 						h_query_labels.data(),
 						Nq,
 						raft::resource::get_cuda_stream(idx.res));
-	
+
 	// Build VecFlow index
 	vecflow::build(idx,
 								raft::make_const_mdspan(dataset.view()),
@@ -140,10 +140,10 @@ int main(int argc, char** argv) {
 								specificity_threshold,
 								full_ivf_cagra_index_fname,
 								full_ivf_bfs_index_fname);
-	
+
 	auto neighbors = raft::make_device_matrix<uint32_t, int64_t>(idx.res, queries.extent(0), topk);
 	auto distances = raft::make_device_matrix<float, int64_t>(idx.res, queries.extent(0), topk);
-	
+
 	// Warmup runs
 	printf("\n=== Performing Search ===\n");
 	for (int i = 0; i < warmup_runs; i++) {
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
 										distances.view());
 		raft::resource::sync_stream(idx.res);
 	}
-	
+
 	// Timed runs
 	auto start_time = std::chrono::high_resolution_clock::now();
 	for (int i = 0; i < num_runs; i++) {
@@ -175,7 +175,7 @@ int main(int argc, char** argv) {
 	printf("- Total time: %.2f ms\n", total_time * 1000.0);
 	printf("- Average per search: %.2f ms\n", avg_ms);
 	printf("- QPS: %.2f\n", qps);
-	
+
 	auto gt_neighbors = raft::make_device_matrix<uint32_t, int64_t>(idx.res, queries.extent(0), topk);
 	generate_ground_truth(idx.res,
 												raft::make_const_mdspan(dataset.view()),
@@ -184,5 +184,6 @@ int main(int argc, char** argv) {
 												query_label_vecs,
 												gt_neighbors.view(),
 												full_ground_truth_fname);
-	compute_recall(idx.res, neighbors.view(), gt_neighbors.view());
+	double recall = compute_recall(idx.res, neighbors.view(), gt_neighbors.view());
+	printf("Recall: %.4f\n", recall);
 }
