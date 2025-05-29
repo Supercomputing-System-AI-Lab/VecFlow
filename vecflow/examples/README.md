@@ -132,10 +132,9 @@ cmake .. && make
 Both examples follow the same process:
 1. Load dataset and configuration
 2. Build dual-structure index (IVF-CAGRA + IVF-BFS)
-3. Generate ground truth if needed
-4. Perform warmup runs
-5. Execute benchmark runs
-6. Report performance metrics (throughput and recall)
+3. Execute benchmark runs
+4. Generate ground truth
+5. Report performance metrics (throughput and recall)
 
 ## 5. Utility Functions
 
