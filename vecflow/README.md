@@ -43,7 +43,7 @@ pip install numpy cupy-cuda11x
 Install VecFlow using the provided source distribution:
 
 ```bash
-pip install ./dist/vecflow-0.0.1.tar.gz
+pip install https://github.com/Supercomputing-System-AI-Lab/VecFlow/releases/download/0.0.1/vecflow-0.0.1.tar.gz
 ```
 
 Note: Make sure you have CUDA 11 compatible GPUs and drivers installed on your system before installation.
