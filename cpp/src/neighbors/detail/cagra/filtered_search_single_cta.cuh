@@ -20,7 +20,7 @@
 #include "device_common.hpp"
 #include "hashmap.hpp"
 #include "search_plan.cuh"
-#include "search_single_cta_kernel.cuh"
+#include "filtered_search_single_cta_kernel.cuh"
 #include "topk_by_radix.cuh"
 #include "topk_for_cagra/topk.h"  // TODO replace with raft topk
 #include "utils.hpp"
@@ -45,7 +45,7 @@
 #include <vector>
 
 namespace cuvs::neighbors::cagra::detail {
-namespace single_cta_search {
+namespace filtered_single_cta_search {
 
 template <typename DataT, typename IndexT, typename DistanceT, typename SAMPLE_FILTER_T>
 struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
@@ -129,7 +129,6 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
       (sizeof(INDEX_T) + sizeof(DISTANCE_T)) * result_buffer_size_32 +
       sizeof(INDEX_T) * hashmap::get_size(small_hash_bitlen) + sizeof(INDEX_T) * search_width +
       sizeof(std::uint32_t) * topk_ws_size + sizeof(std::uint32_t);
-
     std::uint32_t additional_smem_size = 0;
     if (num_itopk_candidates > 256) {
       // Tentatively calculate the required share memory size when radix
@@ -147,7 +146,6 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
       additional_smem_size =
         std::max<std::uint32_t>(additional_smem_size, sizeof(scan_op_t::TempStorage));
     }
-
     smem_size = base_smem_size + additional_smem_size;
 
     uint32_t block_size = thread_block_size;
@@ -219,6 +217,10 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
                   INDEX_T* const result_indices_ptr,       // [num_queries, topk]
                   DISTANCE_T* const result_distances_ptr,  // [num_queries, topk]
                   const DATA_T* const queries_ptr,         // [num_queries, dataset_dim]
+                  const uint32_t* query_labels_ptr,      // [num_queries]
+                  const uint32_t* index_map_ptr,           // [graph size]
+                  const uint32_t* label_size_ptr,          // [num_labels]
+                  const uint32_t* label_offset_ptr,        // [num_labels]
                   const std::uint32_t num_queries,
                   const INDEX_T* dev_seed_ptr,                   // [num_queries, num_seeds]
                   std::uint32_t* const num_executed_iterations,  // [num_queries]
@@ -231,6 +233,10 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
                    result_indices_ptr,
                    result_distances_ptr,
                    queries_ptr,
+                   query_labels_ptr,
+                   index_map_ptr,
+                   label_size_ptr,
+                   label_offset_ptr,
                    num_queries,
                    dev_seed_ptr,
                    num_executed_iterations,
@@ -249,5 +255,5 @@ struct search : search_plan_impl<DataT, IndexT, DistanceT, SAMPLE_FILTER_T> {
   }
 };
 
-}  // namespace single_cta_search
+}  // namespace filtered_single_cta_search
 }  // namespace cuvs::neighbors::cagra::detail

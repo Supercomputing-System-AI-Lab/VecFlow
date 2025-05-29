@@ -370,7 +370,8 @@ void build_knn_graph(
       nn_descent_idx.graph().extent(0),
       nn_descent_idx.graph().extent(1));
 
-  cuvs::neighbors::cagra::detail::graph::sort_knn_graph(res, dataset, knn_graph_internal);
+  cuvs::neighbors::cagra::detail::graph::sort_knn_graph(
+    res, build_params.metric, dataset, knn_graph_internal);
 }
 
 template <
@@ -474,13 +475,13 @@ index<T, IdxT> build(
 
   auto cagra_graph = raft::make_host_matrix<IdxT, int64_t>(dataset.extent(0), graph_degree);
 
-  RAFT_LOG_INFO("optimizing graph");
+  // RAFT_LOG_INFO("optimizing graph");
   optimize<IdxT>(res, knn_graph->view(), cagra_graph.view(), params.guarantee_connectivity);
 
   // free intermediate graph before trying to create the index
   knn_graph.reset();
 
-  RAFT_LOG_INFO("Graph optimized, creating index");
+  // RAFT_LOG_INFO("Graph optimized, creating index");
 
   // Construct an index from dataset and optimized knn graph.
   if (params.compression.has_value()) {
