@@ -1,0 +1,17 @@
+{
+  "data_dir": "../../datasets/sift1M/",
+  "data_fname": "base.fbin",
+  "query_fname": "query.fbin",
+  "data_label_fname": "base.txt",
+  "query_label_fname": "query.txt",
+  "itopk_size": 32,
+  "spec_threshold": 1000,
+  "graph_degree": 16,
+  "topk": 10,
+  "num_runs": 1000,
+  "warmup_runs": 10,
+  "force_rebuild": false,
+  "ivf_graph_fname": "ivf_graph.bin",
+  "ivf_bfs_fname": "ivf_bfs.bin",
+  "ground_truth_fname": "groundtruth.neighbors.10.ibin"
+}

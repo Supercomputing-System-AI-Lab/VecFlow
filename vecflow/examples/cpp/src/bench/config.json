@@ -1,0 +1,20 @@
+{
+  "data_dir": "../../datasets/sift1M/",
+  "data_fname": "base.fbin",
+  "query_fname": "query.fbin",
+  "data_label_fname": "base.txt",
+  "query_label_fname": "query.txt",
+  "algorithms_to_run": ["vecflow", "cagra_inline_filtering", "cagra_post_processing"],
+  "itopk_size": [8, 16, 32, 64, 128, 256, 512],
+  "spec_threshold": 2000,
+  "graph_degree": 16,
+  "topk": 10,
+  "num_runs": 1000,
+  "warmup_runs": 10,
+  "ivf_graph_fname": "ivf_graph.bin",
+  "ivf_bfs_fname": "ivf_bfs.bin",
+  "cagra_index_fname": "cagra_16.bin",
+  "ground_truth_fname": "groundtruth.neighbors.10.ibin",
+  "output_json_file": "../src/bench/results.json",
+  "force_rebuild": false
+}
