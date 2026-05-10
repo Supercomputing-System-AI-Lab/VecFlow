@@ -1,0 +1,216 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Tag-driven release pipeline. Builds libcuvs-vecflow (C++) and vecflow
+# (Python) conda packages on linux-64 + linux-aarch64 and uploads to
+# anaconda.org/VecFlow.
+#
+# To cut a release:
+#   1. bump vecflow/VERSION
+#   2. git tag v0.X.Y && git push --tags
+# Job results land at https://anaconda.org/VecFlow/
+#
+# Layout: three jobs.
+#   build-cpp  — matrix: arch only (2 jobs). Builds libcuvs-vecflow.
+#   build-py   — matrix: arch × python (8 jobs). needs build-cpp; downloads
+#                the C++ .conda + repodata as a local channel and builds the
+#                Python wrapper against it.
+#   publish    — needs both. Downloads every artifact and uploads .conda files
+#                to anaconda.org/VecFlow on tag push.
+#
+# Why split: the C++ package is Python-independent. Bundling it into the
+# Python matrix would rebuild it 4× per arch.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:           # manual trigger from the Actions tab
+
+env:
+  RAPIDS_CUDA_VERSION: "12.9"
+
+jobs:
+  # ── 1. Build C++ package once per arch ─────────────────────────────────────
+  build-cpp:
+    name: cpp / ${{ matrix.subdir }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     subdir: linux-64,      arch: x86_64  }
+          - { runner: ubuntu-24.04-arm, subdir: linux-aarch64, arch: aarch64 }
+
+    runs-on: ${{ matrix.runner }}
+
+    container:
+      image: nvidia/cuda:${{ env.RAPIDS_CUDA_VERSION }}-devel-ubuntu24.04
+
+    steps:
+      - name: Install system tools
+        run: |
+          apt-get update -y
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates git xz-utils
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read VERSION files into env
+        run: |
+          echo "VECFLOW_VERSION=$(tr -d '[:space:]' < vecflow/VERSION)" >> $GITHUB_ENV
+          echo "CUVS_MINOR_VERSION=$(tr -d '[:space:]' < VERSION | awk -F. '{print $1"."$2}')" >> $GITHUB_ENV
+
+      - name: Install pixi (provides rattler-build)
+        run: |
+          curl -fsSL https://pixi.sh/install.sh | sh
+          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
+
+      - name: Install rattler-build
+        run: pixi global install rattler-build
+
+      - name: Build libcuvs-vecflow
+        run: |
+          rattler-build build \
+            --recipe conda/recipes/libcuvs-vecflow/recipe.yaml \
+            --target-platform ${{ matrix.subdir }} \
+            --output-dir ./conda-bld \
+            --channel rapidsai-nightly \
+            --channel rapidsai \
+            --channel conda-forge \
+            --skip-existing all
+
+      # Upload the whole conda-bld tree (subdir + repodata) so build-py can
+      # consume it as a local channel via file:// in the next stage.
+      - name: Upload C++ channel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-${{ matrix.subdir }}
+          path: ./conda-bld/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ── 2. Build Python package per (arch, python) ────────────────────────────
+  build-py:
+    name: py / ${{ matrix.subdir }} / py${{ matrix.python }}
+    needs: build-cpp
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     subdir: linux-64,      arch: x86_64  }
+          - { runner: ubuntu-24.04-arm, subdir: linux-aarch64, arch: aarch64 }
+        python: ["3.11", "3.12", "3.13", "3.14"]
+
+    runs-on: ${{ matrix.runner }}
+
+    container:
+      image: nvidia/cuda:${{ env.RAPIDS_CUDA_VERSION }}-devel-ubuntu24.04
+
+    env:
+      RAPIDS_PY_VERSION: ${{ matrix.python }}
+
+    steps:
+      - name: Install system tools
+        run: |
+          apt-get update -y
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates git xz-utils
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read VERSION files into env
+        run: |
+          echo "VECFLOW_VERSION=$(tr -d '[:space:]' < vecflow/VERSION)" >> $GITHUB_ENV
+          echo "CUVS_MINOR_VERSION=$(tr -d '[:space:]' < VERSION | awk -F. '{print $1"."$2}')" >> $GITHUB_ENV
+
+      - name: Install pixi (provides rattler-build)
+        run: |
+          curl -fsSL https://pixi.sh/install.sh | sh
+          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
+
+      - name: Install rattler-build
+        run: pixi global install rattler-build
+
+      - name: Download C++ channel for this arch
+        uses: actions/download-artifact@v4
+        with:
+          name: cpp-${{ matrix.subdir }}
+          path: ./conda-bld/
+
+      # Mirror local_release_test.sh: pass --variant-config as a real YAML
+      # file rather than inline shell-quoted JSON.
+      - name: Write rattler variant config
+        run: |
+          cat > /tmp/vecflow-variant.yaml <<EOF
+          python:
+            - "${{ matrix.python }}"
+          EOF
+
+      - name: Build vecflow (Python)
+        run: |
+          rattler-build build \
+            --recipe conda/recipes/vecflow/recipe.yaml \
+            --target-platform ${{ matrix.subdir }} \
+            --output-dir ./conda-bld \
+            --channel "file://$(pwd)/conda-bld" \
+            --channel rapidsai-nightly \
+            --channel rapidsai \
+            --channel conda-forge \
+            --variant-config /tmp/vecflow-variant.yaml \
+            --skip-existing all
+
+      - name: Upload Python .conda artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: py-${{ matrix.subdir }}-py${{ matrix.python }}
+          path: ./conda-bld/${{ matrix.subdir }}/vecflow-cu*.conda
+          retention-days: 7
+          if-no-files-found: error
+
+  # ── 3. Publish to anaconda.org/VecFlow on tag push ────────────────────────
+  publish:
+    name: publish to anaconda.org/VecFlow
+    needs: [build-cpp, build-py]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Install pixi
+        run: |
+          curl -fsSL https://pixi.sh/install.sh | sh
+          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
+
+      # Pin to v1 — v2 deprecated the `anaconda upload --user <org>`
+      # syntax used below. Revisit after we've validated v2 flag names.
+      - name: Install anaconda-client (v1)
+        run: pixi global install 'anaconda-client<2'
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Upload .conda files to anaconda.org/VecFlow
+        env:
+          ANACONDA_TOKEN: ${{ secrets.ANACONDA_TOKEN }}
+        run: |
+          # Collect every .conda from every artifact dir. The C++ artifacts
+          # contain the full conda-bld tree (with repodata.json etc), so
+          # filter to .conda files only — anaconda upload doesn't want the
+          # repodata.
+          mapfile -t pkgs < <(find ./artifacts -type f -name '*.conda')
+          if [ ${#pkgs[@]} -eq 0 ]; then
+            echo "ERROR: no .conda artifacts found to upload" >&2
+            exit 1
+          fi
+          echo "Uploading ${#pkgs[@]} package(s):"
+          printf '  %s\n' "${pkgs[@]}"
+          anaconda -t "$ANACONDA_TOKEN" upload \
+                   --user VecFlow \
+                   --label main \
+                   --skip-existing \
+                   "${pkgs[@]}"

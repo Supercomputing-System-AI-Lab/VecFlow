@@ -158,6 +158,58 @@ RAFT_KERNEL build_index_kernel(const LabelT* labels,
   }
 }
 
+template <typename T, typename IdxT>
+RAFT_KERNEL build_variable_size_kernel(const T* dataset,
+                                       const uint32_t* index_map,
+                                       const uint32_t* label_offset,
+                                       T** list_data_ptrs,
+                                       IdxT** list_index_ptrs,
+                                       uint32_t* list_sizes_ptr,
+                                       IdxT n_total_points,
+                                       uint32_t n_lists,
+                                       uint32_t dim,
+                                       uint32_t veclen)
+{
+  const IdxT i = IdxT(blockDim.x) * IdxT(blockIdx.x) + threadIdx.x;
+  if (i >= n_total_points) { return; }
+
+  // Look up source row for this output position.
+  auto source_ix = index_map[i];
+
+  // Binary-search label_offset to find which list this position belongs to.
+  uint32_t left  = 0;
+  uint32_t right = n_lists;
+  while (left < right - 1) {
+    uint32_t mid = (left + right) / 2;
+    if (i < label_offset[mid]) {
+      right = mid;
+    } else {
+      left = mid;
+    }
+  }
+  uint32_t list_id = left;
+
+  auto inlist_id   = atomicAdd(list_sizes_ptr + list_id, 1);
+  auto* list_index = list_index_ptrs[list_id];
+  auto* list_data  = list_data_ptrs[list_id];
+
+  list_index[inlist_id] = source_ix;
+
+  // Interleaved layout, matching build_index_kernel above.
+  using interleaved_group = raft::Pow2<kIndexGroupSize>;
+  auto group_offset       = interleaved_group::roundDown(inlist_id);
+  auto ingroup_id         = interleaved_group::mod(inlist_id) * veclen;
+
+  list_data += group_offset * dim;
+  const T* source_vec = dataset + source_ix * dim;
+
+  for (uint32_t l = 0; l < dim; l += veclen) {
+    for (uint32_t j = 0; j < veclen; j++) {
+      list_data[l * kIndexGroupSize + ingroup_id + j] = source_vec[l + j];
+    }
+  }
+}
+
 /** See cuvs::neighbors::ivf_flat::extend docs */
 template <typename T, typename IdxT>
 void extend(raft::resources const& handle,
@@ -509,6 +561,72 @@ inline void fill_refinement_index(raft::resources const& handle,
                                          n_queries * n_candidates,
                                          refinement_index->dim(),
                                          refinement_index->veclen());
+  RAFT_CUDA_TRY(cudaPeekAtLastError());
+}
+
+/**
+ * Fill an IVF-Flat index with externally-grouped data, producing variable-sized lists.
+ *
+ * Unlike build/extend, lists here are sized from a caller-provided per-list size array, and
+ * each row is placed via a precomputed (index_map, label_offset) pair instead of a kmeans
+ * predict pass. This is used by VecFlow's filtered-BFS path, which groups data by label
+ * and treats each label as a list.
+ *
+ * @param[in]    handle
+ * @param[inout] filtered_index destination index; capacity is resized to fit each list.
+ * @param[in]    dataset        full input rows [n_rows, dim].
+ * @param[in]    index_map      flat permutation of source row ids; size sum(label_size).
+ * @param[in]    label_size     per-list element count, size n_lists.
+ * @param[in]    label_offset   prefix sum of label_size, size n_lists.
+ */
+template <typename T, typename IdxT>
+inline void fill_variable_size_index(
+  raft::resources const& handle,
+  index<T, IdxT>* filtered_index,
+  raft::device_matrix_view<const T, int64_t, raft::row_major> dataset,
+  raft::device_vector_view<uint32_t, int64_t> index_map,
+  raft::device_vector_view<uint32_t, int64_t> label_size,
+  raft::device_vector_view<uint32_t, int64_t> label_offset)
+{
+  auto stream      = raft::resource::get_cuda_stream(handle);
+  uint32_t n_lists = label_size.size();
+  uint32_t dim     = dataset.extent(1);
+
+  // Pull list sizes to host so we can resize each list with the correct capacity.
+  std::vector<uint32_t> h_label_size(n_lists);
+  raft::copy(h_label_size.data(), label_size.data_handle(), n_lists, stream);
+  raft::resource::sync_stream(handle);
+
+  auto& lists = filtered_index->lists();
+  list_spec<uint32_t, T, IdxT> list_device_spec{filtered_index->dim(), false};
+
+  for (uint32_t label = 0; label < n_lists; label++) {
+    uint32_t padded_size = raft::Pow2<kIndexGroupSize>::roundUp(h_label_size[label]);
+    ivf::resize_list(handle, lists[label], list_device_spec, h_label_size[label], padded_size);
+  }
+
+  // Refresh device-side data/inds pointer arrays after the list resizes.
+  ivf::detail::recompute_internal_state(handle, *filtered_index);
+
+  // The kernel uses list_sizes_ptr as an atomic counter; reset to zero before launch.
+  auto list_sizes_ptr = filtered_index->list_sizes().data_handle();
+  RAFT_CUDA_TRY(cudaMemsetAsync(list_sizes_ptr, 0, n_lists * sizeof(uint32_t), stream));
+
+  const dim3 block_dim(256);
+  const dim3 grid_dim(raft::ceildiv<IdxT>(index_map.size(), block_dim.x));
+
+  build_variable_size_kernel<T, IdxT><<<grid_dim, block_dim, 0, stream>>>(
+    dataset.data_handle(),
+    index_map.data_handle(),
+    label_offset.data_handle(),
+    filtered_index->data_ptrs().data_handle(),
+    filtered_index->inds_ptrs().data_handle(),
+    list_sizes_ptr,
+    static_cast<IdxT>(index_map.size()),
+    n_lists,
+    dim,
+    filtered_index->veclen());
+
   RAFT_CUDA_TRY(cudaPeekAtLastError());
 }
 

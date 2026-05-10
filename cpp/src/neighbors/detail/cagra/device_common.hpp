@@ -240,6 +240,159 @@ RAFT_DEVICE_INLINE_FUNCTION void compute_distance_to_child_nodes(
   }
 }
 
+/**
+ * VecFlow filtered variant of `compute_distance_to_random_nodes`.
+ *
+ * Mirrors the current non-filtered helper (visited+traversed hashmap deactivation, optional
+ * persistent-search block sharding) but draws random seeds within a single label window
+ * `[label_offset, label_offset + label_size)` and translates them through `index_map_ptr`
+ * to dataset-absolute indices before computing distances.
+ */
+template <typename IndexT, typename DistanceT, typename DATASET_DESCRIPTOR_T>
+RAFT_DEVICE_INLINE_FUNCTION void filtered_compute_distance_to_random_nodes(
+  IndexT* __restrict__ result_indices_ptr,       // [num_pickup]
+  DistanceT* __restrict__ result_distances_ptr,  // [num_pickup]
+  const DATASET_DESCRIPTOR_T& dataset_desc,
+  const uint32_t num_pickup,
+  const uint32_t num_distilation,
+  const uint64_t rand_xor_mask,
+  const IndexT* __restrict__ seed_ptr,  // [num_seeds]
+  const uint32_t* index_map_ptr,
+  const uint32_t label_size,
+  const uint32_t label_offset,
+  const uint32_t num_seeds,
+  IndexT* __restrict__ visited_hash_ptr,
+  const uint32_t visited_hash_bitlen,
+  IndexT* __restrict__ traversed_hash_ptr = nullptr,
+  const uint32_t traversed_hash_bitlen    = 0,
+  const uint32_t block_id                 = 0,
+  const uint32_t num_blocks               = 1)
+{
+  const auto team_size_bits = dataset_desc.team_size_bitshift_from_smem();
+  const auto max_i = raft::round_up_safe<uint32_t>(num_pickup, warp_size >> team_size_bits);
+
+  for (uint32_t i = threadIdx.x >> team_size_bits; i < max_i; i += (blockDim.x >> team_size_bits)) {
+    const bool valid_i = (i < num_pickup);
+
+    IndexT best_index_team_local    = raft::upper_bound<IndexT>();
+    DistanceT best_norm2_team_local = raft::upper_bound<DistanceT>();
+    for (uint32_t j = 0; j < num_distilation; j++) {
+      // Pick a random label-relative seed index, or use a caller-supplied seed if available.
+      IndexT seed_index = 0;
+      if (valid_i) {
+        uint32_t gid = block_id + (num_blocks * (i + (num_pickup * j)));
+        if (seed_ptr && (gid < num_seeds)) {
+          seed_index = seed_ptr[gid];
+        } else {
+          seed_index = device::xorshift64(gid ^ rand_xor_mask) % label_size;
+        }
+      }
+
+      const auto norm2 =
+        dataset_desc.compute_distance(index_map_ptr[seed_index + label_offset], valid_i);
+
+      if (valid_i && (norm2 < best_norm2_team_local)) {
+        best_norm2_team_local = norm2;
+        best_index_team_local = seed_index;
+      }
+    }
+
+    const unsigned lane_id = threadIdx.x & ((1u << team_size_bits) - 1u);
+    if (valid_i && lane_id == 0) {
+      if (best_index_team_local != raft::upper_bound<IndexT>()) {
+        if (hashmap::insert(visited_hash_ptr, visited_hash_bitlen, best_index_team_local) == 0) {
+          // Visited-hash insertion failed (table full) — drop this entry.
+          best_norm2_team_local = raft::upper_bound<DistanceT>();
+          best_index_team_local = raft::upper_bound<IndexT>();
+        } else if ((traversed_hash_ptr != nullptr) &&
+                   hashmap::search<IndexT, 1>(
+                     traversed_hash_ptr, traversed_hash_bitlen, best_index_team_local)) {
+          // Already taken by another worker (persistent path) — drop this entry.
+          best_norm2_team_local = raft::upper_bound<DistanceT>();
+          best_index_team_local = raft::upper_bound<IndexT>();
+        }
+      }
+      result_distances_ptr[i] = best_norm2_team_local;
+      result_indices_ptr[i]   = best_index_team_local;
+    }
+  }
+}
+
+/**
+ * VecFlow filtered variant of `compute_distance_to_child_nodes`.
+ *
+ * Reads child indices from a per-label slab of the knn graph (offset by
+ * `label_offset * knn_k`), gates them through visited+traversed hashmaps, and computes
+ * distances against `index_map_ptr[child + label_offset]` rather than `child` directly.
+ * Distances are computed by manually inlining `dataset_desc.compute_distance_impl(args, idx)`
+ * with the args struct hoisted out of the loop, mirroring the non-filtered helper for parity.
+ */
+template <typename IndexT, typename DistanceT, typename DATASET_DESCRIPTOR_T>
+RAFT_DEVICE_INLINE_FUNCTION void filtered_compute_distance_to_child_nodes(
+  IndexT* __restrict__ result_child_indices_ptr,
+  DistanceT* __restrict__ result_child_distances_ptr,
+  const DATASET_DESCRIPTOR_T& dataset_desc,
+  const IndexT* __restrict__ knn_graph,
+  const uint32_t knn_k,
+  IndexT* __restrict__ visited_hashmap_ptr,
+  const uint32_t* index_map_ptr,
+  const uint32_t label_size,
+  const uint32_t label_offset,
+  const uint32_t visited_hash_bitlen,
+  const IndexT* __restrict__ parent_indices,
+  const IndexT* __restrict__ internal_topk_list,
+  const uint32_t search_width,
+  IndexT* __restrict__ traversed_hashmap_ptr = nullptr,
+  const uint32_t traversed_hash_bitlen       = 0)
+{
+  constexpr IndexT index_msb_1_mask = utils::gen_index_msb_1_mask<IndexT>::value;
+  constexpr IndexT invalid_index    = raft::upper_bound<IndexT>();
+
+  for (uint32_t i = threadIdx.x; i < knn_k * search_width; i += blockDim.x) {
+    const IndexT smem_parent_id = parent_indices[i / knn_k];
+    IndexT child_id             = invalid_index;
+    if (smem_parent_id != invalid_index) {
+      const auto parent_id = internal_topk_list[smem_parent_id] & ~index_msb_1_mask;
+      child_id             = knn_graph[(i % knn_k) + (static_cast<int64_t>(knn_k) * parent_id) +
+                            (static_cast<int64_t>(label_offset) * knn_k)];
+    }
+    if (child_id != invalid_index) {
+      if (hashmap::insert(visited_hashmap_ptr, visited_hash_bitlen, child_id) == 0) {
+        // Visited-hash insertion failed — drop this entry.
+        child_id = invalid_index;
+      } else if ((traversed_hashmap_ptr != nullptr) &&
+                 hashmap::search<IndexT, 1>(
+                   traversed_hashmap_ptr, traversed_hash_bitlen, child_id)) {
+        // Already taken by another worker (persistent path) — drop this entry.
+        child_id = invalid_index;
+      }
+    }
+    result_child_indices_ptr[i] = child_id;
+  }
+  __syncthreads();
+
+  const auto team_size_bits   = dataset_desc.team_size_bitshift_from_smem();
+  const auto num_k            = knn_k * search_width;
+  const auto max_i            = raft::round_up_safe(num_k, warp_size >> team_size_bits);
+  const auto compute_distance = dataset_desc.compute_distance_impl;
+  const auto args             = dataset_desc.args.load();
+  const bool lead_lane        = (threadIdx.x & ((1u << team_size_bits) - 1u)) == 0;
+  for (uint32_t i = threadIdx.x >> team_size_bits; i < max_i; i += blockDim.x >> team_size_bits) {
+    const bool valid_i  = i < num_k;
+    const auto child_id = valid_i ? result_child_indices_ptr[i] : invalid_index;
+
+    // Manually inlined dataset_desc.compute_distance(...) for performance
+    // (allows hoisting the args fetch out of the loop).
+    const DistanceT child_dist = device::team_sum(
+      (child_id != invalid_index) ? compute_distance(args, index_map_ptr[child_id + label_offset])
+                                  : (lead_lane ? raft::upper_bound<DistanceT>() : 0),
+      team_size_bits);
+    __syncwarp();
+
+    if (valid_i && lead_lane) { result_child_distances_ptr[i] = child_dist; }
+  }
+}
+
 RAFT_DEVICE_INLINE_FUNCTION void lds(float& x, uint32_t addr)
 {
   asm volatile("ld.shared.f32 {%0}, [%1];" : "=f"(x) : "r"(addr));

@@ -88,3 +88,6 @@ ivf_pq_index
 
 # java
 .classpath
+
+# Local IDE / Claude Code state — never committed
+.claude/

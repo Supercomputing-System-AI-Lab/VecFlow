@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Modern PEP 517 packaging for the VecFlow Python wrapper. Drives the CMake
+# build via scikit-build-core so a single `pip install .` produces a wheel
+# that includes the pybind11 module compiled against the conda-installed
+# libcuvs-vecflow. Supersedes setup.py — pyproject.toml takes priority when
+# both exist.
+
+[build-system]
+requires = [
+    "scikit-build-core[pyproject]>=0.10",
+    "pybind11>=2.11",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "vecflow"
+description = "VecFlow: A High-Performance Vector Data Management System for Filtered-Search on GPUs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "SSAIL lab, University of Illinois at Urbana-Champaign" },
+]
+dynamic = ["version"]
+dependencies = [
+    "numpy>=1.19",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: C++",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.optional-dependencies]
+gpu = ["cupy-cuda12x>=10"]
+
+[project.urls]
+Homepage   = "https://supercomputing-system-ai-lab.github.io/projects/vecflow/"
+Repository = "https://github.com/Supercomputing-System-AI-Lab/VecFlow"
+
+# ── scikit-build-core driver ──────────────────────────────────────────────
+# The CMake project at vecflow/CMakeLists.txt (already exists) does
+# pybind11_add_module(vecflow ...) and find_package(cuvs); we just hand it off.
+[tool.scikit-build]
+cmake.version  = ">=3.30"
+ninja.version  = ">=1.10"
+build-dir      = "build/{wheel_tag}"
+wheel.packages = ["vecflow"]
+
+# Single-file source of truth: vecflow/VERSION
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input    = "VERSION"
+regex    = '^(?P<value>\d+\.\d+\.\d+)$'
+
+# When find_package(cuvs) runs inside a conda env with libcuvs-vecflow
+# installed, it picks up $CONDA_PREFIX/lib/cmake/cuvs/cuvs-config.cmake
+# automatically — no override needed. CPM only kicks in for source builds.
+[tool.scikit-build.cmake.define]
+CMAKE_VERBOSE_MAKEFILE = "ON"

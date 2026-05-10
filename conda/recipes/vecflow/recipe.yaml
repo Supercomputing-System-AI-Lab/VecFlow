@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Python wrapper recipe. Depends on libcuvs-vecflow at runtime; the build
+# is small (just the pybind11 binding + small .cu glue from vecflow/) since
+# it links against the precompiled libcuvs.so.
+#
+# Output: vecflow-cu{12,13}, version from vecflow/VERSION.
+
+schema_version: 1
+
+context:
+  version: ${{ env.get("VECFLOW_VERSION", default="0.1.0") }}
+  cuda_version: ${{ env.get("RAPIDS_CUDA_VERSION", default="12.9") }}
+  cuda_major: ${{ (cuda_version | split("."))[0] }}
+  py_version: ${{ env.get("RAPIDS_PY_VERSION", default="3.12") }}
+
+package:
+  name: vecflow-cu${{ cuda_major }}
+  version: ${{ version }}
+
+source:
+  path: ../../..
+
+build:
+  number: 0
+  string: cuda${{ cuda_major }}_py${{ py_version | replace(".", "") }}_h${{ hash }}_${{ build_number }}
+  skip:
+    - not linux
+  script:
+    content: |
+      set -euo pipefail
+      cd vecflow
+      pip install . --no-deps --no-build-isolation -vv
+
+requirements:
+  build:
+    - ${{ compiler("c") }}
+    - ${{ compiler("cxx") }}
+    - ${{ compiler("cuda") }}
+    - cuda-version =${{ cuda_version }}
+    - cmake >=3.30.4
+    - ninja
+    - ${{ stdlib("c") }}
+  host:
+    - python =${{ py_version }}
+    - pip
+    - scikit-build-core >=0.10
+    - pybind11 >=2.11
+    - cuda-version =${{ cuda_version }}
+    - cuda-cudart-dev
+    - libcuvs-vecflow-cu${{ cuda_major }} ==${{ version }}
+  run:
+    - python =${{ py_version }}
+    - numpy >=1.19
+    - ${{ pin_compatible("cuda-version", upper_bound="x", lower_bound="x") }}
+    - libcuvs-vecflow-cu${{ cuda_major }} ==${{ version }}
+  ignore_run_exports:
+    by_name:
+      - cuda-cudart
+      - cuda-version
+
+about:
+  homepage: https://github.com/Supercomputing-System-AI-Lab/VecFlow
+  license: Apache-2.0
+  summary: VecFlow Python bindings (label-aware ANN search on GPU)
+  description: |
+    Python bindings for VecFlow's filtered ANN search. Uses pybind11 to
+    expose cuvs::neighbors::vecflow::{build,search} plus a ground-truth
+    helper. Depends on libcuvs-vecflow for the underlying CUDA library.

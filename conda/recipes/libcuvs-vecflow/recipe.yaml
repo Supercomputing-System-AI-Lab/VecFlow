@@ -1,0 +1,134 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Minimal rattler-build recipe for the VecFlow-patched cuVS C++ library.
+# Builds and installs libcuvs.so + headers + cmake config; depends on the
+# same RAPIDS components upstream cuVS depends on, so we don't fight the
+# transitive graph at install time.
+#
+# Output package: libcuvs-vecflow-cu{12,13}, version from vecflow/VERSION.
+
+schema_version: 1
+
+context:
+  # version comes from env (set by scripts/local_release_test.sh and CI from
+  # vecflow/VERSION). Fallback default keeps the recipe usable standalone.
+  version: ${{ env.get("VECFLOW_VERSION", default="0.1.0") }}
+  cuda_version: ${{ env.get("RAPIDS_CUDA_VERSION", default="12.9") }}
+  cuda_major: ${{ (cuda_version | split("."))[0] }}
+  # cuVS major.minor we're forked off (drives libraft/librmm pin).
+  cuvs_minor: ${{ env.get("CUVS_MINOR_VERSION", default="26.06") }}
+
+package:
+  name: libcuvs-vecflow-cu${{ cuda_major }}
+  version: ${{ version }}
+
+source:
+  path: ../../..
+
+build:
+  number: 0
+  string: cuda${{ cuda_major }}_h${{ hash }}_${{ build_number }}
+  skip:
+    - not linux
+  script:
+    content: |
+      set -euo pipefail
+      # Drive cmake directly (skip build.sh's wrapper) so we can disable
+      # everything we don't ship: tests, C API, bench, MG. Their cmake
+      # subdirs add dependency edges that race the fatbin generation under
+      # ninja/make inside the rattler-build sandbox. Ninja generator is
+      # also more reliable than Makefiles for the rapids-cmake fatbin
+      # custom-command pattern.
+      cmake -S cpp -B cpp/build \
+            -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_CUDA_ARCHITECTURES="80-real;90-real;90a-real" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_C_TESTS=OFF \
+            -DBUILD_C_LIBRARY=OFF \
+            -DBUILD_CUVS_BENCH=OFF \
+            -DBUILD_MG_ALGOS=OFF \
+            -DCUVS_NVTX=OFF
+
+      # Build ONLY the `cuvs` target. Skipping `all` avoids configuring
+      # downstream targets we don't ship and shrinks the dep graph.
+      cmake --build cpp/build --target cuvs --parallel ${PARALLEL_LEVEL:-8}
+
+      # Install only the components we want to ship.
+      cmake --install cpp/build --component cuvs_cpp_headers
+      cmake --install cpp/build --component cuvs
+      cmake --install cpp/build --component cuvs_shared
+    env:
+      PARALLEL_LEVEL: ${{ env.get("PARALLEL_LEVEL", default="8") }}
+      CMAKE_GENERATOR: Ninja
+
+requirements:
+  build:
+    - ${{ compiler("c") }}
+    - ${{ compiler("cxx") }}
+    - ${{ compiler("cuda") }}
+    - cuda-version =${{ cuda_version }}
+    - cmake >=3.30.4
+    - ninja
+    - ${{ stdlib("c") }}
+  host:
+    - cuda-version =${{ cuda_version }}
+    - cuda-cudart-dev
+    - cuda-nvrtc-dev
+    - cuda-profiler-api
+    - libcublas-dev
+    - libcurand-dev
+    - libcusolver-dev
+    - libcusparse-dev
+    - libnvjitlink-dev
+    - libraft-headers =${{ cuvs_minor }}
+    - librmm =${{ cuvs_minor }}
+    - nccl >=2.19
+  run:
+    - ${{ pin_compatible("cuda-version", upper_bound="x", lower_bound="x") }}
+    - libraft-headers =${{ cuvs_minor }}
+    - librmm =${{ cuvs_minor }}
+    - cuda-nvrtc
+    - libcublas
+    - libcurand
+    - libcusolver
+    - libcusparse
+    - nccl
+  ignore_run_exports:
+    by_name:
+      - cuda-cudart
+      - cuda-nvrtc
+      - cuda-version
+      - libcublas
+      - libcurand
+      - libcusolver
+      - libcusparse
+      - librmm
+      - nccl
+
+about:
+  homepage: https://github.com/Supercomputing-System-AI-Lab/VecFlow
+  license: Apache-2.0
+  summary: cuVS with VecFlow filtered-ANN extensions (C++ library + headers)
+  description: |
+    libcuvs.so built from VecFlow's fork of cuVS 26.06. Strict additive
+    extension of the upstream public API — every upstream cagra / ivf_flat
+    / ivf_pq / brute_force / nn_descent function keeps its existing signature
+    and behavior. VecFlow adds the following new namespaces alongside:
+      - cuvs::neighbors::cagra::filtered_search   (per-query label gate)
+      - cuvs::neighbors::filtered_bfs::*          (one-probe IVF-Flat label gate)
+      - cuvs::neighbors::vecflow::*               (composite IVF-Graph + IVF-BFS)
+    Modifications to cagra/ivf_flat detail headers (new device helpers,
+    new search_algo enum branch, new dispatch overloads) are likewise purely
+    additive — none of the upstream code paths are altered.
+
+    NOTE: this is a *separate* conda package named `libcuvs-vecflow-cuXX`,
+    not a replacement for the rapidsai `libcuvs` package. Install one or
+    the other, not both.
+
+    Until cuVS 26.06 is on the stable rapidsai channel, install with the
+    nightly channel listed first:
+
+        mamba install -c VecFlow -c rapidsai-nightly -c rapidsai \
+                      -c conda-forge libcuvs-vecflow-cu12

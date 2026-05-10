@@ -306,6 +306,16 @@ if(NOT BUILD_CPU_ONLY)
       "${CMAKE_CURRENT_BINARY_DIR}/src/neighbors/detail/cagra/search_single_cta_inst_data_@data_abbrev@.cu"
   )
 
+  generate_inst_matrix(
+    cagra_filtered_search_single_cta_inst_files
+    MATRIX_JSON_FILE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/neighbors/detail/cagra/filtered_search_single_cta_matrix.json"
+    INPUT_FILE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/neighbors/detail/cagra/filtered_search_single_cta_inst.cu.in"
+    OUTPUT_FILE_FORMAT
+      "${CMAKE_CURRENT_BINARY_DIR}/src/neighbors/detail/cagra/filtered_search_single_cta_inst_data_@data_abbrev@.cu"
+  )
+
   configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/neighbors/detail/cagra/compute_distance-ext.cuh.in"
     "${CMAKE_CURRENT_BINARY_DIR}/src/neighbors/detail/cagra/compute_distance-ext.cuh" @ONLY
@@ -323,6 +333,13 @@ if(NOT BUILD_CPU_ONLY)
     ${cagra_compute_distance_vpq_inst_files}
     ${cagra_search_multi_cta_inst_files}
     ${cagra_search_single_cta_inst_files}
+    # VecFlow filtered_search: per-type instantiations are matrix-rendered like the
+    # other cagra search variants.
+    ${cagra_filtered_search_single_cta_inst_files}
+    src/neighbors/cagra_filtered_search_float.cu
+    src/neighbors/cagra_filtered_search_half.cu
+    src/neighbors/cagra_filtered_search_int8.cu
+    src/neighbors/cagra_filtered_search_uint8.cu
   )
 
   set_source_files_properties(
@@ -902,6 +919,18 @@ if(NOT BUILD_CPU_ONLY)
     ${nn_descent_inst_files}
     src/neighbors/nn_descent_gnnd_inst.cu
     src/neighbors/nn_descent_index.cpp
+    # VecFlow: filtered_bfs algorithm.
+    src/neighbors/filtered_bfs/detail/build_filtered_bfs_float.cu
+    src/neighbors/filtered_bfs/detail/build_filtered_bfs_int8_t.cu
+    src/neighbors/filtered_bfs/detail/build_filtered_bfs_uint8_t.cu
+    src/neighbors/filtered_bfs/detail/search_filtered_bfs_float.cu
+    src/neighbors/filtered_bfs/detail/search_filtered_bfs_int8_t.cu
+    src/neighbors/filtered_bfs/detail/search_filtered_bfs_uint8_t.cu
+    # VecFlow: top-level vecflow algorithm.
+    src/neighbors/vecflow/detail/build_vecflow_float.cu
+    src/neighbors/vecflow/detail/build_vecflow_int8_t.cu
+    src/neighbors/vecflow/detail/search_vecflow_float.cu
+    src/neighbors/vecflow/detail/search_vecflow_int8_t.cu
     ${refine_device_inst_files}
     ${refine_host_inst_files}
     src/neighbors/scann/scann_build_float.cu

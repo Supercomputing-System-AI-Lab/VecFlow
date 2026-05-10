@@ -1,5 +1,4 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION.
  * SPDX-License-Identifier: Apache-2.0
  */
 #pragma once
@@ -8,7 +7,7 @@
 #include "device_common.hpp"
 #include "hashmap.hpp"
 #include "search_plan.cuh"
-#include "search_single_cta_kernel.cuh"
+#include "filtered_search_single_cta_kernel.cuh"
 #include "topk_by_radix.cuh"
 #include "topk_for_cagra/topk.h"  // TODO replace with raft topk
 #include "utils.hpp"
@@ -22,10 +21,10 @@
 
 // TODO: This shouldn't be invoking anything from spatial/knn
 #include "../ann_utils.cuh"
+#include "../smem_utils.cuh"
 
 #include <raft/util/cuda_rt_essentials.hpp>
 #include <raft/util/cudart_utils.hpp>  // RAFT_CUDA_TRY_NOT_THROW is used TODO(tfeher): consider moving this to cuda_rt_essentials.hpp
-#include <raft/util/pow2_utils.cuh>
 
 #include <algorithm>
 #include <cassert>
@@ -35,7 +34,7 @@
 #include <vector>
 
 namespace cuvs::neighbors::cagra::detail {
-namespace single_cta_search {
+namespace filtered_single_cta_search {
 
 template <typename DataT,
           typename IndexT,
@@ -117,7 +116,7 @@ struct search
     //
     // Determine the thread block size
     //
-    constexpr unsigned min_block_size       = 64;
+    constexpr unsigned min_block_size       = 64;  // 32 or 64
     constexpr unsigned min_block_size_radix = 256;
     constexpr unsigned max_block_size       = 1024;
     //
@@ -127,19 +126,14 @@ struct search
       (sizeof(INDEX_T) + sizeof(DISTANCE_T)) * result_buffer_size_32 +
       sizeof(INDEX_T) * hashmap::get_size(small_hash_bitlen) + sizeof(INDEX_T) * search_width +
       sizeof(std::uint32_t) * topk_ws_size + sizeof(std::uint32_t);
-
     std::uint32_t additional_smem_size = 0;
-    if (num_itopk_candidates > 256) {  // radix sort
-      // Tentatively calculate the required shared memory size when radix sort based topk is used,
-      // assuming the block size is the maximum.
+    if (num_itopk_candidates > 256) {
+      // Tentatively calculate the required share memory size when radix
+      // sort based topk is used, assuming the block size is the maximum.
       if (itopk_size <= 256) {
-        constexpr unsigned MAX_ITOPK = 256;
-        additional_smem_size +=
-          topk_by_radix_sort<INDEX_T>::smem_size(MAX_ITOPK) * sizeof(std::uint32_t);
+        additional_smem_size += topk_by_radix_sort<256, INDEX_T>::smem_size * sizeof(std::uint32_t);
       } else {
-        constexpr unsigned MAX_ITOPK = 512;
-        additional_smem_size +=
-          topk_by_radix_sort<INDEX_T>::smem_size(MAX_ITOPK) * sizeof(std::uint32_t);
+        additional_smem_size += topk_by_radix_sort<512, INDEX_T>::smem_size * sizeof(std::uint32_t);
       }
     }
 
@@ -149,14 +143,13 @@ struct search
       additional_smem_size =
         std::max<std::uint32_t>(additional_smem_size, sizeof(scan_op_t::TempStorage));
     }
-
     smem_size = base_smem_size + additional_smem_size;
 
     uint32_t block_size = thread_block_size;
     if (block_size == 0) {
       block_size = min_block_size;
 
-      if (num_itopk_candidates > 256) {  // radix sort
+      if (num_itopk_candidates > 256) {
         // radix-based topk is used.
         block_size = min_block_size_radix;
 
@@ -194,6 +187,19 @@ struct search
                  max_block_size);
     thread_block_size = block_size;
 
+    if (num_itopk_candidates <= 256) {
+      RAFT_LOG_DEBUG("# bitonic-sort based topk routine is used");
+    } else {
+      RAFT_LOG_DEBUG("# radix-sort based topk routine is used");
+      smem_size = base_smem_size;
+      if (itopk_size <= 256) {
+        constexpr unsigned MAX_ITOPK = 256;
+        smem_size += topk_by_radix_sort<MAX_ITOPK, INDEX_T>::smem_size * sizeof(std::uint32_t);
+      } else {
+        constexpr unsigned MAX_ITOPK = 512;
+        smem_size += topk_by_radix_sort<MAX_ITOPK, INDEX_T>::smem_size * sizeof(std::uint32_t);
+      }
+    }
     RAFT_LOG_DEBUG("# smem_size: %u", smem_size);
     hashmap_size = 0;
     if (small_hash_bitlen == 0 && !this->persistent) {
@@ -202,40 +208,32 @@ struct search
     }
     RAFT_LOG_DEBUG("# hashmap_size: %lu", hashmap_size);
   }
-
   using base_type::operator();
-
-  void operator()(
-    raft::resources const& res,
-    raft::device_matrix_view<const INDEX_T, int64_t, raft::row_major> graph,
-    std::optional<raft::device_vector_view<const SourceIndexT, int64_t>> source_indices,
-    OutputIndexT* const result_indices_ptr,  // [num_queries, topk]
-    DISTANCE_T* const result_distances_ptr,  // [num_queries, topk]
-    const DATA_T* const queries_ptr,         // [num_queries, dataset_dim]
-    const std::uint32_t num_queries,
-    const INDEX_T* dev_seed_ptr,                   // [num_queries, num_seeds]
-    std::uint32_t* const num_executed_iterations,  // [num_queries]
-    uint32_t topk,
-    SAMPLE_FILTER_T sample_filter)
+  void operator()(raft::resources const& res,
+                  raft::device_matrix_view<const INDEX_T, int64_t, raft::row_major> graph,
+                  INDEX_T* const result_indices_ptr,       // [num_queries, topk]
+                  DISTANCE_T* const result_distances_ptr,  // [num_queries, topk]
+                  const DATA_T* const queries_ptr,         // [num_queries, dataset_dim]
+                  const uint32_t* query_labels_ptr,      // [num_queries]
+                  const uint32_t* index_map_ptr,           // [graph size]
+                  const uint32_t* label_size_ptr,          // [num_labels]
+                  const uint32_t* label_offset_ptr,        // [num_labels]
+                  const std::uint32_t num_queries,
+                  const INDEX_T* dev_seed_ptr,                   // [num_queries, num_seeds]
+                  std::uint32_t* const num_executed_iterations,  // [num_queries]
+                  uint32_t topk,
+                  SAMPLE_FILTER_T sample_filter)
   {
-    cudaStream_t stream                 = raft::resource::get_cuda_stream(res);
-    constexpr uintptr_t kOutputIndexTag = raft::Pow2<sizeof(OutputIndexT)>::Log2;
-    const auto result_indices_uintptr   = reinterpret_cast<uintptr_t>(result_indices_ptr);
-    static_assert(kOutputIndexTag <= 3, "OutputIndexT can't be more than 8 bytes");
-    if constexpr (kOutputIndexTag <= 1) {
-      // NB: there's no need for runtime check here for larger OutputIndexT naturally aligned
-      RAFT_EXPECTS((result_indices_uintptr & 0x3) == 0,
-                   "result_indices_ptr must be at least 4-byte aligned");
-    }
+    cudaStream_t stream = raft::resource::get_cuda_stream(res);
     select_and_run(dataset_desc,
                    graph,
-                   source_indices,
-                   // NB: tag the indices pointer with its element size.
-                   //     This allows us to avoid multiplying kernel instantiations
-                   //     and any costs for extra registers in the kernel signature.
-                   result_indices_uintptr | kOutputIndexTag,
+                   result_indices_ptr,
                    result_distances_ptr,
                    queries_ptr,
+                   query_labels_ptr,
+                   index_map_ptr,
+                   label_size_ptr,
+                   label_offset_ptr,
                    num_queries,
                    dev_seed_ptr,
                    num_executed_iterations,
@@ -254,5 +252,5 @@ struct search
   }
 };
 
-}  // namespace single_cta_search
+}  // namespace filtered_single_cta_search
 }  // namespace cuvs::neighbors::cagra::detail

@@ -271,7 +271,9 @@ enum class search_algo {
   /** For small batch sizes. */
   MULTI_CTA    = 1,
   MULTI_KERNEL = 2,
-  AUTO         = 100
+  /** Specialized SINGLE_CTA path used by VecFlow's filtered_search. */
+  SINGLE_CTA_FILTERED = 3,
+  AUTO                = 100
 };
 
 enum class hash_mode { HASH = 0, SMALL = 1, AUTO = 100 };
@@ -1728,6 +1730,73 @@ void search(raft::resources const& res,
             raft::device_matrix_view<float, int64_t, raft::row_major> distances,
             const cuvs::neighbors::filtering::base_filter& sample_filter =
               cuvs::neighbors::filtering::none_sample_filter{});
+
+/**
+ * @brief VecFlow filtered search: per-query label gating against a label-grouped CAGRA index.
+ *
+ * @param[in] res
+ * @param[in] params
+ * @param[in] index           CAGRA index built over a label-grouped dataset.
+ * @param[in] queries         [n_queries, dim]
+ * @param[out] neighbors      [n_queries, k]
+ * @param[out] distances      [n_queries, k]
+ * @param[in] query_labels    [n_queries] label per query
+ * @param[in] index_map       flat permutation of source row ids; size sum(label_size)
+ * @param[in] label_size      [n_labels]
+ * @param[in] label_offset    prefix sum of label_size, [n_labels]
+ * @param[in] sample_filter   optional sample filter
+ */
+void filtered_search(raft::resources const& res,
+                     cuvs::neighbors::cagra::search_params const& params,
+                     const cuvs::neighbors::cagra::index<float, uint32_t>& index,
+                     raft::device_matrix_view<const float, int64_t, raft::row_major> queries,
+                     raft::device_matrix_view<uint32_t, int64_t, raft::row_major> neighbors,
+                     raft::device_matrix_view<float, int64_t, raft::row_major> distances,
+                     raft::device_vector_view<uint32_t, int64_t> query_labels,
+                     raft::device_vector_view<uint32_t, int64_t> index_map,
+                     raft::device_vector_view<uint32_t, int64_t> label_size,
+                     raft::device_vector_view<uint32_t, int64_t> label_offset,
+                     const cuvs::neighbors::filtering::base_filter& sample_filter =
+                       cuvs::neighbors::filtering::none_sample_filter{});
+
+void filtered_search(raft::resources const& res,
+                     cuvs::neighbors::cagra::search_params const& params,
+                     const cuvs::neighbors::cagra::index<half, uint32_t>& index,
+                     raft::device_matrix_view<const half, int64_t, raft::row_major> queries,
+                     raft::device_matrix_view<uint32_t, int64_t, raft::row_major> neighbors,
+                     raft::device_matrix_view<float, int64_t, raft::row_major> distances,
+                     raft::device_vector_view<uint32_t, int64_t> query_labels,
+                     raft::device_vector_view<uint32_t, int64_t> index_map,
+                     raft::device_vector_view<uint32_t, int64_t> label_size,
+                     raft::device_vector_view<uint32_t, int64_t> label_offset,
+                     const cuvs::neighbors::filtering::base_filter& sample_filter =
+                       cuvs::neighbors::filtering::none_sample_filter{});
+
+void filtered_search(raft::resources const& res,
+                     cuvs::neighbors::cagra::search_params const& params,
+                     const cuvs::neighbors::cagra::index<int8_t, uint32_t>& index,
+                     raft::device_matrix_view<const int8_t, int64_t, raft::row_major> queries,
+                     raft::device_matrix_view<uint32_t, int64_t, raft::row_major> neighbors,
+                     raft::device_matrix_view<float, int64_t, raft::row_major> distances,
+                     raft::device_vector_view<uint32_t, int64_t> query_labels,
+                     raft::device_vector_view<uint32_t, int64_t> index_map,
+                     raft::device_vector_view<uint32_t, int64_t> label_size,
+                     raft::device_vector_view<uint32_t, int64_t> label_offset,
+                     const cuvs::neighbors::filtering::base_filter& sample_filter =
+                       cuvs::neighbors::filtering::none_sample_filter{});
+
+void filtered_search(raft::resources const& res,
+                     cuvs::neighbors::cagra::search_params const& params,
+                     const cuvs::neighbors::cagra::index<uint8_t, uint32_t>& index,
+                     raft::device_matrix_view<const uint8_t, int64_t, raft::row_major> queries,
+                     raft::device_matrix_view<uint32_t, int64_t, raft::row_major> neighbors,
+                     raft::device_matrix_view<float, int64_t, raft::row_major> distances,
+                     raft::device_vector_view<uint32_t, int64_t> query_labels,
+                     raft::device_vector_view<uint32_t, int64_t> index_map,
+                     raft::device_vector_view<uint32_t, int64_t> label_size,
+                     raft::device_vector_view<uint32_t, int64_t> label_offset,
+                     const cuvs::neighbors::filtering::base_filter& sample_filter =
+                       cuvs::neighbors::filtering::none_sample_filter{});
 
 /**
  * @}

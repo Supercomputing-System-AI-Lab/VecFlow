@@ -185,6 +185,22 @@ struct search_plan_impl : public search_plan_impl_base {
     uint32_t topk,
     SAMPLE_FILTER_T sample_filter) {};
 
+  /** Overload used by VecFlow's filtered_search path. */
+  virtual void operator()(raft::resources const& res,
+                          raft::device_matrix_view<const INDEX_T, int64_t, raft::row_major> graph,
+                          INDEX_T* const result_indices_ptr,
+                          DISTANCE_T* const result_distances_ptr,
+                          const DATA_T* const queries_ptr,
+                          const uint32_t* query_labels_ptr,
+                          const uint32_t* index_map_ptr,
+                          const uint32_t* label_size_ptr,
+                          const uint32_t* label_offset_ptr,
+                          const std::uint32_t num_queries,
+                          const INDEX_T* dev_seed_ptr,
+                          std::uint32_t* const num_executed_iterations,
+                          uint32_t topk,
+                          SAMPLE_FILTER_T sample_filter) {};
+
   void adjust_search_params()
   {
     uint32_t _max_iterations = max_iterations;
@@ -379,7 +395,7 @@ struct search_plan_impl : public search_plan_impl_base {
       }
     }
     if (algo != search_algo::SINGLE_CTA && algo != search_algo::MULTI_CTA &&
-        algo != search_algo::MULTI_KERNEL) {
+        algo != search_algo::MULTI_KERNEL && algo != search_algo::SINGLE_CTA_FILTERED) {
       error_message += "An invalid kernel mode has been given: " + std::to_string((int)algo) + "";
     }
     if (thread_block_size != 0 && thread_block_size != 64 && thread_block_size != 128 &&

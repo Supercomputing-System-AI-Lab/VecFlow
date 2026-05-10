@@ -202,6 +202,8 @@ struct search
 
   ~search() {}
 
+  using base_type::operator();
+
   void operator()(
     raft::resources const& res,
     raft::device_matrix_view<const INDEX_T, int64_t, raft::row_major> graph,
