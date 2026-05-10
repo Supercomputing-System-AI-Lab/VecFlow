@@ -43,8 +43,12 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
 
+    # NOTE: hardcode CUDA version here — GitHub Actions does not evaluate
+    # ${{ env.* }} in `container.image`. Keep this in sync with the
+    # workflow-level `env: RAPIDS_CUDA_VERSION` (used by rattler-build at
+    # runtime via the process environment).
     container:
-      image: nvidia/cuda:${{ env.RAPIDS_CUDA_VERSION }}-devel-ubuntu24.04
+      image: nvidia/cuda:12.9-devel-ubuntu24.04
 
     steps:
       - name: Install system tools
@@ -105,8 +109,12 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
 
+    # NOTE: hardcode CUDA version here — GitHub Actions does not evaluate
+    # ${{ env.* }} in `container.image`. Keep this in sync with the
+    # workflow-level `env: RAPIDS_CUDA_VERSION` (used by rattler-build at
+    # runtime via the process environment).
     container:
-      image: nvidia/cuda:${{ env.RAPIDS_CUDA_VERSION }}-devel-ubuntu24.04
+      image: nvidia/cuda:12.9-devel-ubuntu24.04
 
     env:
       RAPIDS_PY_VERSION: ${{ matrix.python }}
