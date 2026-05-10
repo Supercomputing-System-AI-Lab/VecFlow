@@ -50,12 +50,19 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
 
-    # NOTE: hardcode CUDA version here — GitHub Actions does not evaluate
-    # ${{ env.* }} in `container.image`. Keep this in sync with the
-    # workflow-level `env: RAPIDS_CUDA_VERSION` (used by rattler-build at
-    # runtime via the process environment).
+    # NOTE: hardcoded CUDA version. Two reasons it has to be a literal:
+    #   1. GitHub Actions doesn't evaluate ${{ env.* }} in `container.image`.
+    #   2. NVIDIA only publishes patch-level tags on Docker Hub (e.g.
+    #      `12.9.1-devel-ubuntu24.04`). The shorthand `12.9-devel-ubuntu24.04`
+    #      does NOT exist as a manifest and pulls fail with `manifest unknown`.
+    # The workflow-level `env: RAPIDS_CUDA_VERSION` ("12.9", major.minor) is
+    # used for conda dep pinning inside recipes (cuda-version is keyed by
+    # major.minor on conda), so the two values intentionally diverge: the
+    # image gets the patch-level tag, the env var stays major.minor.
+    # Bump both together when CUDA moves; verify a candidate tag with
+    # `docker manifest inspect nvidia/cuda:<tag>` before committing.
     container:
-      image: nvidia/cuda:12.9-devel-ubuntu24.04
+      image: nvidia/cuda:12.9.1-devel-ubuntu24.04
 
     steps:
       - name: Install system tools
@@ -116,12 +123,19 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
 
-    # NOTE: hardcode CUDA version here — GitHub Actions does not evaluate
-    # ${{ env.* }} in `container.image`. Keep this in sync with the
-    # workflow-level `env: RAPIDS_CUDA_VERSION` (used by rattler-build at
-    # runtime via the process environment).
+    # NOTE: hardcoded CUDA version. Two reasons it has to be a literal:
+    #   1. GitHub Actions doesn't evaluate ${{ env.* }} in `container.image`.
+    #   2. NVIDIA only publishes patch-level tags on Docker Hub (e.g.
+    #      `12.9.1-devel-ubuntu24.04`). The shorthand `12.9-devel-ubuntu24.04`
+    #      does NOT exist as a manifest and pulls fail with `manifest unknown`.
+    # The workflow-level `env: RAPIDS_CUDA_VERSION` ("12.9", major.minor) is
+    # used for conda dep pinning inside recipes (cuda-version is keyed by
+    # major.minor on conda), so the two values intentionally diverge: the
+    # image gets the patch-level tag, the env var stays major.minor.
+    # Bump both together when CUDA moves; verify a candidate tag with
+    # `docker manifest inspect nvidia/cuda:<tag>` before committing.
     container:
-      image: nvidia/cuda:12.9-devel-ubuntu24.04
+      image: nvidia/cuda:12.9.1-devel-ubuntu24.04
 
     env:
       RAPIDS_PY_VERSION: ${{ matrix.python }}
