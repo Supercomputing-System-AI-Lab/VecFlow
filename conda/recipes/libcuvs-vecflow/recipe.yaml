@@ -62,15 +62,6 @@ build:
     env:
       PARALLEL_LEVEL: ${{ env.get("PARALLEL_LEVEL", default="8") }}
       CMAKE_GENERATOR: Ninja
-      # sccache passthrough — when CI sets these (see release.yml), the inner
-      # cmake builds the C++/CUDA objects through sccache and writes the
-      # cache to GitHub Actions cache. Empty/unset on local builds is a no-op.
-      SCCACHE_GHA_ENABLED: ${{ env.get("SCCACHE_GHA_ENABLED", default="") }}
-      ACTIONS_CACHE_URL: ${{ env.get("ACTIONS_CACHE_URL", default="") }}
-      ACTIONS_RUNTIME_TOKEN: ${{ env.get("ACTIONS_RUNTIME_TOKEN", default="") }}
-      CMAKE_C_COMPILER_LAUNCHER: ${{ env.get("CMAKE_C_COMPILER_LAUNCHER", default="") }}
-      CMAKE_CXX_COMPILER_LAUNCHER: ${{ env.get("CMAKE_CXX_COMPILER_LAUNCHER", default="") }}
-      CMAKE_CUDA_COMPILER_LAUNCHER: ${{ env.get("CMAKE_CUDA_COMPILER_LAUNCHER", default="") }}
 
 requirements:
   build:
