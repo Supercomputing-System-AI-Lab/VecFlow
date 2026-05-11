@@ -13,6 +13,8 @@
 #include "utils.hpp"
 #include <neighbors/detail/cagra/compute_distance-ext.cuh>
 
+#include <optional>
+
 #include <raft/core/device_mdspan.hpp>
 #include <raft/core/logger.hpp>
 #include <raft/core/resource/cuda_stream.hpp>
@@ -131,9 +133,9 @@ struct search
       // Tentatively calculate the required share memory size when radix
       // sort based topk is used, assuming the block size is the maximum.
       if (itopk_size <= 256) {
-        additional_smem_size += topk_by_radix_sort<256, INDEX_T>::smem_size * sizeof(std::uint32_t);
+        additional_smem_size += topk_by_radix_sort<INDEX_T>::smem_size(256) * sizeof(std::uint32_t);
       } else {
-        additional_smem_size += topk_by_radix_sort<512, INDEX_T>::smem_size * sizeof(std::uint32_t);
+        additional_smem_size += topk_by_radix_sort<INDEX_T>::smem_size(512) * sizeof(std::uint32_t);
       }
     }
 
@@ -194,10 +196,10 @@ struct search
       smem_size = base_smem_size;
       if (itopk_size <= 256) {
         constexpr unsigned MAX_ITOPK = 256;
-        smem_size += topk_by_radix_sort<MAX_ITOPK, INDEX_T>::smem_size * sizeof(std::uint32_t);
+        smem_size += topk_by_radix_sort<INDEX_T>::smem_size(MAX_ITOPK) * sizeof(std::uint32_t);
       } else {
         constexpr unsigned MAX_ITOPK = 512;
-        smem_size += topk_by_radix_sort<MAX_ITOPK, INDEX_T>::smem_size * sizeof(std::uint32_t);
+        smem_size += topk_by_radix_sort<INDEX_T>::smem_size(MAX_ITOPK) * sizeof(std::uint32_t);
       }
     }
     RAFT_LOG_DEBUG("# smem_size: %u", smem_size);
@@ -211,7 +213,7 @@ struct search
   using base_type::operator();
   void operator()(raft::resources const& res,
                   raft::device_matrix_view<const INDEX_T, int64_t, raft::row_major> graph,
-                  INDEX_T* const result_indices_ptr,       // [num_queries, topk]
+                  OutputIndexT* const result_indices_ptr,  // [num_queries, topk]
                   DISTANCE_T* const result_distances_ptr,  // [num_queries, topk]
                   const DATA_T* const queries_ptr,         // [num_queries, dataset_dim]
                   const uint32_t* query_labels_ptr,      // [num_queries]
@@ -222,33 +224,52 @@ struct search
                   const INDEX_T* dev_seed_ptr,                   // [num_queries, num_seeds]
                   std::uint32_t* const num_executed_iterations,  // [num_queries]
                   uint32_t topk,
-                  SAMPLE_FILTER_T sample_filter)
+                  SAMPLE_FILTER_T sample_filter,
+                  // Optional multi-label AND inputs — nullptr disables AND mode.
+                  const uint32_t* dataset_labels_ptr        = nullptr,
+                  const int64_t*  dataset_label_offsets_ptr = nullptr,
+                  const uint32_t* query_labels_second_ptr   = nullptr)
   {
     cudaStream_t stream = raft::resource::get_cuda_stream(res);
-    select_and_run(dataset_desc,
-                   graph,
-                   result_indices_ptr,
-                   result_distances_ptr,
-                   queries_ptr,
-                   query_labels_ptr,
-                   index_map_ptr,
-                   label_size_ptr,
-                   label_offset_ptr,
-                   num_queries,
-                   dev_seed_ptr,
-                   num_executed_iterations,
-                   *this,
-                   topk,
-                   num_itopk_candidates,
-                   static_cast<uint32_t>(thread_block_size),
-                   smem_size,
-                   hash_bitlen,
-                   hashmap.data(),
-                   small_hash_bitlen,
-                   small_hash_reset_interval,
-                   num_seeds,
-                   sample_filter,
-                   stream);
+    constexpr uintptr_t kOutputIndexTag = raft::Pow2<sizeof(OutputIndexT)>::Log2;
+    const auto result_indices_uintptr   = reinterpret_cast<uintptr_t>(result_indices_ptr);
+    static_assert(kOutputIndexTag <= 3, "OutputIndexT can't be more than 8 bytes");
+    if constexpr (kOutputIndexTag <= 1) {
+      // NB: there's no need for runtime check here for larger OutputIndexT naturally aligned
+      RAFT_EXPECTS((result_indices_uintptr & 0x3) == 0,
+                   "result_indices_ptr must be at least 4-byte aligned");
+    }
+    select_and_run<DATA_T, INDEX_T, DISTANCE_T, SourceIndexT, SAMPLE_FILTER_T>(
+      dataset_desc,
+      graph,
+      /*source_indices=*/std::nullopt,
+      result_indices_uintptr | kOutputIndexTag,
+      result_distances_ptr,
+      queries_ptr,
+      num_queries,
+      dev_seed_ptr,
+      num_executed_iterations,
+      *this,
+      topk,
+      num_itopk_candidates,
+      static_cast<uint32_t>(thread_block_size),
+      smem_size,
+      hash_bitlen,
+      hashmap.data(),
+      small_hash_bitlen,
+      small_hash_reset_interval,
+      num_seeds,
+      sample_filter,
+      // Per-label filtered routing.
+      query_labels_ptr,
+      index_map_ptr,
+      label_size_ptr,
+      label_offset_ptr,
+      // Optional multi-label AND inputs.
+      dataset_labels_ptr,
+      dataset_label_offsets_ptr,
+      query_labels_second_ptr,
+      stream);
   }
 };
 

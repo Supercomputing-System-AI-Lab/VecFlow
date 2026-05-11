@@ -66,19 +66,29 @@ vf.build(
     specificity_threshold=2000,       # labels with ≥ this many points → CAGRA; rarer → BFS
     graph_fname="ivf_graph.bin",      # cache path for the IVF-CAGRA graph
     bfs_fname="ivf_bfs.bin",          # cache path for the IVF-BFS index
+    multi_label=False,                # set True to also prep CSR for search_multi(...) below
 )
 
-# Search
+# Single-label search
 neighbors, distances = vf.search(
     queries=query_vectors,            # numpy array (n_queries x dim), float32
     query_labels=query_labels,        # numpy array (n_queries,), int32
     itopk_size=32,                    # internal top-k buffer (higher = better recall, slower)
     topk=10,                          # neighbors returned per query
 )
+
+# 2-label AND search (requires the index to be built with multi_label=True)
+neighbors, distances = vf.search_multi(
+    queries=query_vectors,            # numpy array (n_queries x dim), float32
+    query_labels_a=labels_a,          # numpy array (n_queries,), int32 — any order
+    query_labels_b=labels_b,          # numpy array (n_queries,), int32 — order vs `_a` is irrelevant
+    itopk_size=32,
+    topk=10,
+)
 ```
 
-`help(vecflow.VecFlow.build)` and `help(vecflow.VecFlow.search)` show the
-full docstrings with parameter types and shapes. Type stubs in
+`help(vecflow.VecFlow.build)` / `help(vecflow.VecFlow.search)` /
+`help(vecflow.VecFlow.search_multi)` show the full docstrings. Type stubs in
 `vecflow/vecflow.pyi` give IDE auto-completion.
 
 ### C++
@@ -94,6 +104,7 @@ int main() {
     shared_resources::configured_raft_resources res;
 
     // Build VecFlow index. data_labels is std::vector<std::vector<int>>.
+    // Set multi_label=true to also prep the CSR label arrays for AND search.
     auto idx = vecflow::build(
         res,
         raft::make_const_mdspan(dataset.view()),   // device matrix [n × dim]
@@ -101,15 +112,29 @@ int main() {
         /*graph_degree*/           16,
         /*specificity_threshold*/  2000,
         /*graph_fname*/            "ivf_graph.bin",
-        /*bfs_fname*/              "ivf_bfs.bin");
+        /*bfs_fname*/              "ivf_bfs.bin",
+        /*force_rebuild*/          false,
+        /*multi_label*/            false);          // set true to enable search_multi_labels
 
-    // Search. itopk = internal top-k buffer; topk = neighbors per query.
+    // Single-label search.
     vecflow::search(
         res, idx,
         raft::make_const_mdspan(queries.view()),
-        query_labels.view(),
+        query_labels.view(),                       // [n_queries], uint32_t
         /*itopk_size*/ 32,
         neighbors.view(),                          // device matrix [n_queries × topk]
+        distances.view());
+
+    // 2-label AND search (requires multi_label=true at build time). Order
+    // of `query_labels_a` vs `_b` is irrelevant — the impl auto-picks the
+    // larger-frequency label as the primary IVF selector.
+    vecflow::search_multi_labels(
+        res, idx,
+        raft::make_const_mdspan(queries.view()),
+        query_labels_a.view(),                     // [n_queries], uint32_t
+        query_labels_b.view(),                     // [n_queries], uint32_t
+        /*itopk_size*/ 32,
+        neighbors.view(),
         distances.view());
 
     return 0;
@@ -117,17 +142,17 @@ int main() {
 ```
 
 The full set of public APIs:
-- `cuvs::neighbors::vecflow::{build, search, index<T>}` — composite top-level
-- `cuvs::neighbors::filtered_bfs::{build_filtered_bfs, search_filtered_bfs}` — IVF-Flat with one-probe label gate
-- `cuvs::neighbors::cagra::filtered_search` — CAGRA with per-query label gating
+- `cuvs::neighbors::vecflow::{build, search, search_multi_labels, index<T>}` — composite top-level (single- and 2-label AND search)
+- `cuvs::neighbors::filtered_bfs::{build_filtered_bfs, search_filtered_bfs}` — IVF-Flat with one-probe label gate; `search_filtered_bfs` accepts optional `dataset_labels_ptr`/`dataset_label_offsets_ptr`/`query_labels_second_ptr` for inline AND filtering
+- `cuvs::neighbors::cagra::filtered_search` — CAGRA with per-query label gating; same optional trailing pointers for inline AND filtering
 
 ## 1. Building from Source
 
 ### Environment setup
 
 ```bash
-# CUDA 12
-conda env create --name vecflow -f ../conda/environments/all_cuda-128_arch-x86_64.yaml
+# CUDA 12.9 (x86_64). Other env files in the same dir cover aarch64 + CUDA 13.1.
+conda env create --name vecflow -f ../conda/environments/all_cuda-129_arch-x86_64.yaml
 conda activate vecflow
 ```
 
@@ -147,7 +172,7 @@ into `$CONDA_PREFIX/lib/`.
 
 ```bash
 cd vecflow
-pip install . --no-build-isolation
+./build.sh python                  # convenience wrapper
 ```
 
 `scikit-build-core` drives a CMake build of the pybind11 module against the
@@ -228,15 +253,34 @@ python python/vecflow_example.py --config path/to/config.json
 
 ### C++
 
-The C++ example requires the cuVS C++ library installed (step 1 above):
+The C++ example requires the cuVS C++ library installed (step 1 above). A convenience script wraps the cmake/make dance:
 
 ```bash
-cd examples/cpp
-mkdir build && cd build
-cmake .. && make
-./VECFLOW_EXAMPLE                                       # uses default config
-./VECFLOW_EXAMPLE --config path/to/config.json
+cd vecflow              # repo's vecflow/ subdir, where build.sh lives
+./build.sh examples     # configures + builds; binary lands in examples/cpp/build/VECFLOW_EXAMPLE
 ```
+
+Run it with the default config (paths in `config.json` are relative to `examples/cpp/src/`):
+
+```bash
+cd examples/cpp/src
+../build/VECFLOW_EXAMPLE                                # uses ./config.json
+../build/VECFLOW_EXAMPLE --config path/to/config.json   # custom config
+```
+
+`./build.sh` also accepts:
+
+| Command | What |
+|---|---|
+| `./build.sh` | Same as `./build.sh examples` |
+| `./build.sh examples` | Configure + build the C++ example |
+| `./build.sh python` | `pip install .` the Python wrapper into the active env |
+| `./build.sh clean` | Remove `examples/cpp/build/` |
+| `./build.sh examples python` | Both targets in one go |
+| `./build.sh -j 8 examples` | Parallel jobs (default: `nproc`) |
+| `./build.sh -v examples` | Verbose (echoes every command) |
+| `./build.sh -h` | Help |
+
 
 ### What both examples do
 
@@ -244,22 +288,71 @@ cmake .. && make
 2. Build the dual-structure index (IVF-CAGRA for high-specificity labels, IVF-BFS for low-specificity).
 3. Generate ground truth via brute force (once, reused for every itopk_size).
 4. Sweep over each `itopk_size` in the config: warmup → timed runs → recall.
-5. Print a per-itopk row + a compact summary table at the end.
+5. Print one progress line per itopk value with QPS / avg latency / recall.
 
 `itopk_size` can be a single integer or an array. With an array (default
 config: `[16, 32, 64, 128]`) the sweep shows the speed/recall trade-off:
 small itopk = faster but lower recall, large itopk = higher recall but
-slower. Example output:
+slower. Example output (NVIDIA GH200, bundled SIFT1M config; absolute
+QPS/latency depend on GPU and dataset):
 
 ```
-=== Summary ===
-  itopk_size         qps    avg_ms   recall
-  ----------  ----------  --------  -------
-          16     85432.1     0.117   0.8512
-          32     63215.4     0.158   0.9234
-          64     42108.2     0.237   0.9678
-         128     28503.7     0.351   0.9891
+=== Performing Search Sweep ===
+  itopk=  16  qps= 8466428.5  avg= 1.181 ms  recall=0.8743
+  itopk=  32  qps= 6035911.2  avg= 1.657 ms  recall=0.9397
+  itopk=  64  qps= 3299089.0  avg= 3.031 ms  recall=0.9831
+  itopk= 128  qps= 1573093.1  avg= 6.357 ms  recall=0.9968
 ```
+
+### Multi-label AND example (2 labels per query)
+
+A separate pair of examples — `vecflow_example_multi.{cu,py}` — exercises
+the 2-label AND search path through `vecflow::search_multi_labels`. They
+build the index with `multi_label=true`, brute-force AND ground truth, then
+sweep itopk the same way as the single-label sweep.
+
+The bundled SIFT1M `query.txt` is single-label. Generate the 2-label query
+file from it once:
+
+```bash
+cd vecflow/examples/python
+python generate_multi_query.py \
+    --base-labels  ../datasets/sift1M/base.txt \
+    --query-labels ../datasets/sift1M/query.txt \
+    --out-txt      ../datasets/sift1M/query_multi.txt \
+    --out-spmat    ../datasets/sift1M/query_multi.spmat \
+    --min-and-size 500
+```
+
+`--out-spmat` is optional. The script's built-in default for `--min-and-size` is 50;
+the bundled examples use 500 for a stricter benchmark (each kept query has ≥500
+AND-valid candidates, so recall numbers are meaningful and not bottlenecked by
+tiny intersection sets).
+
+The generator picks the second label such that the **AND intersection**
+`points(primary) ∩ points(secondary)` has at least `--min-and-size`
+members. Queries for which no such secondary exists are emitted as `-1`
+rows in `query_multi.txt`, and both the C++ and Python examples auto-skip
+them, so every query that reaches `search_multi_labels` has a meaningfully
+large ground-truth set. The generator prints the distribution of intersection
+sizes at the end so you can tune the threshold (raise it for stricter
+benchmarks, lower it to keep more queries).
+
+Then run either example:
+
+```bash
+# C++
+./build.sh examples                # already builds VECFLOW_EXAMPLE_MULTI alongside
+~/VecFlow/vecflow/examples/cpp/build/VECFLOW_EXAMPLE_MULTI
+
+# Python
+cd vecflow/examples/python
+python vecflow_example_multi.py
+```
+
+The config files (`config_multi.json` in each example dir) point at
+`query_multi.txt` and use a separate `groundtruth.multi.neighbors.10.ibin`
+cache, so the multi-label run won't clobber the single-label ground truth.
 
 ## 5. Utility helpers worth knowing
 
@@ -270,3 +363,9 @@ slower. Example output:
 **Ground truth generation**:
 - Python — `generate_ground_truth()` in `examples/python/vecflow_example.py`
 - C++ — `generate_ground_truth()` in `examples/cpp/src/common.cuh`
+- AND ground truth (multi-label): `generate_ground_truth_multi()` in `examples/cpp/src/common.cuh`; `brute_force_and_ground_truth()` in `examples/python/vecflow_example_multi.py`
+
+**Multi-label query file generation**:
+- `examples/python/generate_multi_query.py` — converts a single-label
+  `query.txt` into a 2-label `query_multi.txt` (and optionally `.spmat`)
+  by sampling co-occurring secondary labels from the base label distribution.

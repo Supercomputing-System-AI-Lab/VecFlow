@@ -43,7 +43,12 @@ void search_filtered_bfs(raft::resources const& res,
                          raft::device_matrix_view<float, int64_t, raft::row_major> distances,
                          cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded,
                          const cuvs::neighbors::filtering::base_filter& sample_filter =
-                            cuvs::neighbors::filtering::none_sample_filter{});
+                            cuvs::neighbors::filtering::none_sample_filter{},
+                         // Optional multi-label AND inputs — all-null means single-label mode.
+                         // See `cagra::filtered_search` doc for buffer layout.
+                         const uint32_t* dataset_labels_ptr        = nullptr,
+                         const int64_t*  dataset_label_offsets_ptr = nullptr,
+                         const uint32_t* query_labels_second_ptr   = nullptr);
 
 void search_filtered_bfs(raft::resources const& res,
                          cuvs::neighbors::ivf_flat::index<uint8_t, int64_t>& idx,
@@ -54,7 +59,11 @@ void search_filtered_bfs(raft::resources const& res,
                          raft::device_matrix_view<float, int64_t, raft::row_major> distances,
                          cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded,
                          const cuvs::neighbors::filtering::base_filter& sample_filter =
-                          cuvs::neighbors::filtering::none_sample_filter{});
+                          cuvs::neighbors::filtering::none_sample_filter{},
+                         // Optional multi-label AND inputs — all-null means single-label mode.
+                         const uint32_t* dataset_labels_ptr        = nullptr,
+                         const int64_t*  dataset_label_offsets_ptr = nullptr,
+                         const uint32_t* query_labels_second_ptr   = nullptr);
 
 void search_filtered_bfs(raft::resources const& res,
                          cuvs::neighbors::ivf_flat::index<int8_t, int64_t>& idx,
@@ -65,6 +74,10 @@ void search_filtered_bfs(raft::resources const& res,
                          raft::device_matrix_view<float, int64_t, raft::row_major> distances,
                          cuvs::distance::DistanceType metric = cuvs::distance::DistanceType::L2Unexpanded,
                          const cuvs::neighbors::filtering::base_filter& sample_filter =
-                          cuvs::neighbors::filtering::none_sample_filter{});
+                          cuvs::neighbors::filtering::none_sample_filter{},
+                         // Optional multi-label AND inputs — all-null means single-label mode.
+                         const uint32_t* dataset_labels_ptr        = nullptr,
+                         const int64_t*  dataset_label_offsets_ptr = nullptr,
+                         const uint32_t* query_labels_second_ptr   = nullptr);
 
 }  // namespace cuvs::neighbors

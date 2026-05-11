@@ -36,7 +36,7 @@ void search(shared_resources::configured_raft_resources& res,
   auto query_info = classify_queries<data_t>(res,
                                              queries,
                                              query_labels,
-                                             index.cat_freq.view(),
+                                             index.label_freq.view(),
                                              index.specificity_threshold);
 
   int64_t topk = neighbors.extent(1);
@@ -56,9 +56,9 @@ void search(shared_resources::configured_raft_resources& res,
                            cagra_neighbors.view(),
                            cagra_distances.view(),
                            query_info.cagra_query_labels.view(),
-                           index.cagra_index_map.view(),
-                           index.cagra_label_size.view(),
-                           index.cagra_label_offset.view());
+                           index.graph_index_map.view(),
+                           index.graph_label_size.view(),
+                           index.graph_label_offset.view());
     raft::resource::sync_stream(res);
   }
 

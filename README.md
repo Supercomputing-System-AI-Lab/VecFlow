@@ -5,7 +5,7 @@ VecFlow is a high-performance vector data management system for filtered-search 
 VecFlow introduces the concept of "label specificity" - the number of data points associated with a particular label. Using a configurable specificity threshold T, it builds a dual-structured index: an IVF-CAGRA index for data points with labels that appear frequently (high specificity, ≥ T points), and an IVF-BFS index with interleaved vector storage for rare data points (low specificity, < T points). This dual-index approach optimizes GPU memory access patterns and achieves high performance across varying label distributions.
 
 ## Recent News
-* [5/10/2026] 🚀 VecFlow v0.1.0 released — rebased onto cuVS 26.06; precompiled conda packages on [anaconda.org/VecFlow](https://anaconda.org/VecFlow) for Linux x86_64 + aarch64, CUDA 12, Python 3.11–3.14
+* [5/10/2026] 🚀 VecFlow v0.1.0 released — rebased onto cuVS 26.06; added multi-label AND query support (`vecflow::search_multi_labels`); precompiled conda packages on [anaconda.org/VecFlow](https://anaconda.org/VecFlow) for Linux x86_64 + aarch64, CUDA 12, Python 3.11–3.14
 * [5/23/2025] 🎉 VecFlow accepted by SIGMOD 2026!
 * [5/30/2025] 🚀 VecFlow v0.0.1 released
 * [2/27/2025] ⚙️ Introduced JSON-based configuration files for easier parameter management
@@ -61,11 +61,16 @@ For the CMake snippet, coexistence note with upstream cuVS, full Python and C++ 
 If you use VecFlow in your research, please cite our paper:
 
 ```bibtex
-@article{vecflow2025,
+@article{xi2025vecflow,
   author    = {Xi, Jingyi and Mo, Chenghao and Karsin, Ben and Chirkin, Artem and Li, Mingqin and Zhang, Minjia},
   title     = {VecFlow: A High-Performance Vector Data Management System for Filtered-Search on GPUs},
-  journal   = {arXiv preprint arXiv:2506.00812},
+  journal   = {Proc. ACM Manag. Data},
+  volume    = {3},
+  number    = {4},
+  articleno = {271},
+  numpages  = {27},
   year      = {2025},
+  doi       = {10.1145/3749189},
 }
 ```
 

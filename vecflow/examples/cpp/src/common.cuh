@@ -343,6 +343,78 @@ void generate_ground_truth(raft::resources const& res,
 	std::cout << "Generated filtered ground truth for " << n_queries << " queries" << std::endl;
 }
 
+/**
+ * Brute-force ground truth for 2-label AND search. For each query, the
+ * candidate set is the INTERSECTION of points carrying label_a and points
+ * carrying label_b; we then take the top-k nearest among that intersection.
+ * Same on-disk cache contract as `generate_ground_truth`.
+ */
+inline void generate_ground_truth_multi(raft::resources const& res,
+                                        raft::device_matrix_view<const float, int64_t> dataset,
+                                        raft::device_matrix_view<const float, int64_t> queries,
+                                        const std::vector<std::vector<int>>& label_data_vecs,
+                                        const std::vector<int>& query_labels_a,
+                                        const std::vector<int>& query_labels_b,
+                                        raft::device_matrix_view<uint32_t, int64_t> gt_neighbors,
+                                        std::string gt_fname) {
+	std::ifstream f(gt_fname);
+	if (f.good()) {
+		load_matrix_from_ibin(res, gt_fname, gt_neighbors);
+		return;
+	}
+
+	int64_t n_queries     = static_cast<int64_t>(query_labels_a.size());
+	int64_t n_database    = dataset.extent(0);
+	int64_t words_per_row = (n_database + 31) / 32;
+
+	auto bitmap = raft::make_device_matrix<uint32_t, int64_t>(res, n_queries, words_per_row);
+	RAFT_CUDA_TRY(cudaMemsetAsync(bitmap.data_handle(),
+	                              0,
+	                              bitmap.size() * sizeof(uint32_t),
+	                              raft::resource::get_cuda_stream(res)));
+
+	// Per-row bitmap: bits set for points that contain BOTH label_a AND label_b.
+	for (int64_t q = 0; q < n_queries; q++) {
+		const auto& pts_a = label_data_vecs[query_labels_a[q]];
+		const auto& pts_b = label_data_vecs[query_labels_b[q]];
+		// Build set of pts_a for O(log n) lookups, then intersect with pts_b.
+		std::vector<int> a_sorted(pts_a.begin(), pts_a.end());
+		std::sort(a_sorted.begin(), a_sorted.end());
+		std::vector<uint32_t> h_bits(words_per_row, 0);
+		for (int p : pts_b) {
+			if (p >= n_database) continue;
+			if (std::binary_search(a_sorted.begin(), a_sorted.end(), p)) {
+				h_bits[p / 32] |= (1u << (p % 32));
+			}
+		}
+		raft::update_device(bitmap.data_handle() + q * words_per_row,
+		                    h_bits.data(),
+		                    words_per_row,
+		                    raft::resource::get_cuda_stream(res));
+	}
+
+	// Brute-force search with the intersection bitmap as filter.
+	cuvs::neighbors::brute_force::index_params bf_idx_p;
+	bf_idx_p.metric = cuvs::distance::DistanceType::L2Expanded;
+	auto bf_idx     = cuvs::neighbors::brute_force::build(res, bf_idx_p, dataset);
+
+	auto bitmap_view = raft::core::bitmap_view<uint32_t, int64_t>(
+	  bitmap.data_handle(), n_queries, n_database);
+	auto filter = cuvs::neighbors::filtering::bitmap_filter<uint32_t, int64_t>(bitmap_view);
+
+	auto temp_nbr = raft::make_device_matrix<int64_t, int64_t>(res, queries.extent(0), gt_neighbors.extent(1));
+	auto gt_dist  = raft::make_device_matrix<float,   int64_t>(res, queries.extent(0), gt_neighbors.extent(1));
+	cuvs::neighbors::brute_force::search_params bf_search_p;
+	cuvs::neighbors::brute_force::search(res, bf_search_p, bf_idx, queries,
+	                                     temp_nbr.view(), gt_dist.view(), filter);
+	raft::resource::sync_stream(res);
+
+	convert_neighbors_to_uint32(res, temp_nbr.data_handle(), gt_neighbors.data_handle(),
+	                            n_queries, gt_neighbors.extent(1));
+	save_matrix_to_ibin(res, gt_fname, gt_neighbors);
+	std::cout << "Generated AND ground truth for " << n_queries << " queries" << std::endl;
+}
+
 double compute_recall(const raft::resources& res,
                       raft::device_matrix_view<uint32_t, int64_t> neighbors,
                       raft::device_matrix_view<uint32_t, int64_t> gt_indices) {

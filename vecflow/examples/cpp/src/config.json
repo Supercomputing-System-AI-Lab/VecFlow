@@ -8,7 +8,7 @@
   "spec_threshold": 5000,
   "graph_degree": 16,
   "topk": 10,
-  "num_runs": 1000,
+  "num_runs": 100,
   "warmup_runs": 10,
   "force_rebuild": false,
   "ivf_graph_fname": "ivf_graph.bin",

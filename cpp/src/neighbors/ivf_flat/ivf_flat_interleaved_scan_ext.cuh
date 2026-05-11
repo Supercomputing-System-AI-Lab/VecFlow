@@ -36,7 +36,12 @@ void ivfflat_interleaved_scan(const index<T, IdxT>& index,
                               float* distances,
                               uint32_t& grid_dim_x,
                               rmm::cuda_stream_view stream,
-                              const std::optional<std::string>& metric_udf) RAFT_EXPLICIT;
+                              const std::optional<std::string>& metric_udf,
+                              // VecFlow multi-label AND inline filter buffers
+                              // (all-null disables AND mode).
+                              const uint32_t* dataset_labels_ptr        = nullptr,
+                              const int64_t*  dataset_label_offsets_ptr = nullptr,
+                              const uint32_t* query_labels_second_ptr   = nullptr) RAFT_EXPLICIT;
 
 #define CUVS_INST_IVF_FLAT_INTERLEAVED_SCAN(T, IdxT, SampleFilterT)                        \
   extern template void                                                                     \
@@ -59,7 +64,10 @@ void ivfflat_interleaved_scan(const index<T, IdxT>& index,
                                           float* distances,                                \
                                           uint32_t& grid_dim_x,                            \
                                           rmm::cuda_stream_view stream,                    \
-                                          const std::optional<std::string>& metric_udf);
+                                          const std::optional<std::string>& metric_udf,    \
+                                          const uint32_t* dataset_labels_ptr,              \
+                                          const int64_t*  dataset_label_offsets_ptr,       \
+                                          const uint32_t* query_labels_second_ptr);
 
 CUVS_INST_IVF_FLAT_INTERLEAVED_SCAN(float, int64_t, cuvs::neighbors::filtering::none_sample_filter);
 

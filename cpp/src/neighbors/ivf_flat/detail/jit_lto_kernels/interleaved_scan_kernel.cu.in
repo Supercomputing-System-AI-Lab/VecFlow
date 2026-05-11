@@ -34,6 +34,10 @@ extern "C" __global__ __launch_bounds__(kThreadsPerBlock) void interleaved_scan(
   uint32_t* bitset_ptr,
   index_t bitset_len,
   index_t original_nbits,
+  // VecFlow multi-label AND inline filter buffers (all-null ⇒ AND mode off).
+  const uint32_t* dataset_labels_ptr,
+  const int64_t*  dataset_label_offsets_ptr,
+  const uint32_t* query_labels_second_ptr,
   uint32_t* neighbors,
   float* distances)
 {
@@ -52,6 +56,9 @@ extern "C" __global__ __launch_bounds__(kThreadsPerBlock) void interleaved_scan(
                                                                      bitset_ptr,
                                                                      bitset_len,
                                                                      original_nbits,
+                                                                     dataset_labels_ptr,
+                                                                     dataset_label_offsets_ptr,
+                                                                     query_labels_second_ptr,
                                                                      neighbors,
                                                                      distances);
 }

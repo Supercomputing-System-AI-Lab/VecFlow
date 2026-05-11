@@ -83,6 +83,12 @@ __device__ __forceinline__ void interleaved_scan_impl(const uint32_t query_smem_
                                                       uint32_t* bitset_ptr,
                                                       IdxT bitset_len,
                                                       IdxT original_nbits,
+                                                      // VecFlow multi-label AND inline filter
+                                                      // buffers. All three nullptr ⇒ AND mode
+                                                      // disabled (no-op, matches upstream cuVS).
+                                                      const uint32_t* dataset_labels_ptr,
+                                                      const int64_t*  dataset_label_offsets_ptr,
+                                                      const uint32_t* query_labels_second_ptr,
                                                       uint32_t* neighbors,
                                                       float* distances)
 {
@@ -156,13 +162,33 @@ __device__ __forceinline__ void interleaved_scan_impl(const uint32_t query_smem_
 
         // This is the vector a given lane/thread handles
         const uint32_t vec_id = group_id * raft::WarpSize + lane_id;
-        const bool valid      = vec_id < list_length && sample_filter<IdxT>(inds_ptrs,
+        bool valid            = vec_id < list_length && sample_filter<IdxT>(inds_ptrs,
                                                                        queries_offset + blockIdx.y,
                                                                        list_id,
                                                                        vec_id,
                                                                        bitset_ptr,
                                                                        bitset_len,
                                                                        original_nbits);
+
+        // VecFlow multi-label AND inline check: each lane is already working
+        // on a different sample (warp-level parallelism over samples), so the
+        // right shape is per-thread binary search of the lane's own sample's
+        // sorted label slice for the secondary query label. Skipped when the
+        // caller doesn't supply the buffers (single-label / unfiltered mode).
+        if (valid && query_labels_second_ptr != nullptr) {
+          const IdxT global_id   = inds_ptrs[list_id][vec_id];
+          const uint32_t target  = query_labels_second_ptr[queries_offset + blockIdx.y];
+          int64_t lo             = dataset_label_offsets_ptr[global_id];
+          int64_t hi             = dataset_label_offsets_ptr[global_id + 1];
+          bool found             = false;
+          while (lo < hi) {  // binary search; slice is sorted ascending (paper §4.3.2)
+            const int64_t mid    = lo + ((hi - lo) >> 1);
+            const uint32_t v     = dataset_labels_ptr[mid];
+            if (v == target) { found = true; break; }
+            if (v < target) { lo = mid + 1; } else { hi = mid; }
+          }
+          valid = found;
+        }
 
         // Enqueue one element per thread
         float val = local_topk_t::queue_t::kDummy;

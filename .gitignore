@@ -91,3 +91,5 @@ ivf_pq_index
 
 # Local IDE / Claude Code state — never committed
 .claude/
+
+datasets/

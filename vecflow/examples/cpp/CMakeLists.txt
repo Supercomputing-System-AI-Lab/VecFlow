@@ -56,3 +56,9 @@ add_executable(VECFLOW_EXAMPLE src/vecflow_example.cu)
 # `$<TARGET_NAME_IF_EXISTS:conda_env>` is a generator expression that ensures that targets are
 # installed in a conda environment, if one exists
 target_link_libraries(VECFLOW_EXAMPLE PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE nlohmann_json::nlohmann_json PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)
+
+# Multi-label (2-label AND) example. Uses vecflow::search_multi_labels and the
+# index's multi_label=true build path. Shares all loaders/ground-truth helpers
+# with VECFLOW_EXAMPLE; only the config file and search call differ.
+add_executable(VECFLOW_EXAMPLE_MULTI src/vecflow_example_multi.cu)
+target_link_libraries(VECFLOW_EXAMPLE_MULTI PUBLIC OpenMP::OpenMP_CXX PRIVATE cuvs::cuvs PRIVATE nlohmann_json::nlohmann_json PRIVATE $<TARGET_NAME_IF_EXISTS:conda_env>)

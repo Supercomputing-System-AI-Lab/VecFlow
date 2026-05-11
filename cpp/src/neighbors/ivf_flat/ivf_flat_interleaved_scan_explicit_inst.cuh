@@ -37,6 +37,9 @@
                                           float* distances,                                \
                                           uint32_t& grid_dim_x,                            \
                                           rmm::cuda_stream_view stream,                    \
-                                          const std::optional<std::string>& metric_udf);
+                                          const std::optional<std::string>& metric_udf,    \
+                                          const uint32_t* dataset_labels_ptr,              \
+                                          const int64_t*  dataset_label_offsets_ptr,       \
+                                          const uint32_t* query_labels_second_ptr);
 
 #define COMMA ,

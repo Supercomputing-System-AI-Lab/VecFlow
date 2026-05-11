@@ -32,7 +32,12 @@ void search_filtered_bfs_core(raft::resources const& res,
                               raft::device_matrix_view<idx_t, int64_t, raft::row_major> neighbors,
                               raft::device_matrix_view<float, int64_t, raft::row_major> distances,
                               cuvs::distance::DistanceType metric,
-                              FilterT sample_filter) {
+                              FilterT sample_filter,
+                              // Optional multi-label AND inline filter buffers.
+                              // All-null leaves the kernel in single-label mode.
+                              const uint32_t* dataset_labels_ptr        = nullptr,
+                              const int64_t*  dataset_label_offsets_ptr = nullptr,
+                              const uint32_t* query_labels_second_ptr   = nullptr) {
 
   int64_t  n_queries = queries.extent(0);
   uint32_t k         = static_cast<uint32_t>(neighbors.extent(1));
@@ -84,7 +89,11 @@ void search_filtered_bfs_core(raft::resources const& res,
            distances.data_handle(),
            grid_dim_x,
            raft::resource::get_cuda_stream(res),
-           std::nullopt);
+           std::nullopt,
+           // VecFlow multi-label AND inline filter buffers (nullptr ⇒ off).
+           dataset_labels_ptr,
+           dataset_label_offsets_ptr,
+           query_labels_second_ptr);
  
   cuvs::neighbors::ivf::detail::postprocess_neighbors(neighbors.data_handle(),
                                                       neighbors_uint32,
@@ -107,13 +116,21 @@ void search_filtered_bfs_impl(raft::resources const& res,
                               raft::device_matrix_view<idx_t, int64_t, raft::row_major> neighbors,
                               raft::device_matrix_view<float, int64_t, raft::row_major> distances,
                               cuvs::distance::DistanceType metric,
-                              const cuvs::neighbors::filtering::base_filter& sample_filter_ref) {
+                              const cuvs::neighbors::filtering::base_filter& sample_filter_ref,
+                              // Optional multi-label AND inputs — all-null disables AND mode.
+                              // The buffers are passed straight into cuVS's
+                              // `ivfflat_interleaved_scan`, which now embeds the
+                              // per-thread AND-check inline at the kernel body.
+                              const uint32_t* dataset_labels_ptr        = nullptr,
+                              const int64_t*  dataset_label_offsets_ptr = nullptr,
+                              const uint32_t* query_labels_second_ptr   = nullptr) {
   try {
     using none_filter_type = cuvs::neighbors::filtering::none_sample_filter;
     auto& sample_filter = dynamic_cast<const none_filter_type&>(sample_filter_ref);
     auto sample_filter_copy = sample_filter;
     detail::search_filtered_bfs_core(
-      res, idx, queries, query_labels, label_size, neighbors, distances, metric, sample_filter_copy);
+      res, idx, queries, query_labels, label_size, neighbors, distances, metric, sample_filter_copy,
+      dataset_labels_ptr, dataset_label_offsets_ptr, query_labels_second_ptr);
     return;
   } catch (const std::bad_cast&) {
   }

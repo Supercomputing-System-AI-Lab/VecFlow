@@ -185,7 +185,10 @@ struct search_plan_impl : public search_plan_impl_base {
     uint32_t topk,
     SAMPLE_FILTER_T sample_filter) {};
 
-  /** Overload used by VecFlow's filtered_search path. */
+  /** Overload used by VecFlow's filtered_search path.
+   *  The trailing dataset_labels_ptr / dataset_label_offsets_ptr /
+   *  query_labels_second_ptr arguments are optional (may be nullptr) and
+   *  enable 2-label AND inline filtering when all three are non-null. */
   virtual void operator()(raft::resources const& res,
                           raft::device_matrix_view<const INDEX_T, int64_t, raft::row_major> graph,
                           INDEX_T* const result_indices_ptr,
@@ -199,7 +202,10 @@ struct search_plan_impl : public search_plan_impl_base {
                           const INDEX_T* dev_seed_ptr,
                           std::uint32_t* const num_executed_iterations,
                           uint32_t topk,
-                          SAMPLE_FILTER_T sample_filter) {};
+                          SAMPLE_FILTER_T sample_filter,
+                          const uint32_t* dataset_labels_ptr        = nullptr,
+                          const int64_t*  dataset_label_offsets_ptr = nullptr,
+                          const uint32_t* query_labels_second_ptr   = nullptr) {};
 
   void adjust_search_params()
   {

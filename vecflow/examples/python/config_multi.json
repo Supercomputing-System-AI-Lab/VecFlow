@@ -3,7 +3,7 @@
   "data_fname": "base.fbin",
   "query_fname": "query.fbin",
   "data_label_fname": "base.txt",
-  "query_label_fname": "query.txt",
+  "query_label_fname": "query_multi.txt",
   "itopk_size": [16, 32, 64, 128],
   "spec_threshold": 5000,
   "graph_degree": 16,
@@ -13,5 +13,5 @@
   "force_rebuild": false,
   "ivf_graph_fname": "ivf_graph.bin",
   "ivf_bfs_fname": "ivf_bfs.bin",
-  "ground_truth_fname": "groundtruth.neighbors.10.ibin"
+  "ground_truth_fname": "groundtruth.multi.neighbors.10.ibin"
 }

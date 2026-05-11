@@ -49,7 +49,8 @@ void PyVecFlow::build(py::array_t<float> dataset,
                       int specificity_threshold,
                       std::string graph_fname,
                       std::string bfs_fname,
-                      bool force_rebuild) {
+                      bool force_rebuild,
+                      bool multi_label) {
   
   auto dataset_info = dataset.request();
   int64_t n = dataset_info.shape[0];
@@ -76,7 +77,8 @@ void PyVecFlow::build(py::array_t<float> dataset,
                                     specificity_threshold,
                                     graph_fname,
                                     bfs_fname,
-                                    force_rebuild);
+                                    force_rebuild,
+                                    multi_label);
   idx = std::make_unique<vecflow::index<float>>(std::move(built_index));
   raft::resource::sync_stream(res);
 }
@@ -165,6 +167,82 @@ PyVecFlow::search(py::array_t<float> queries,
   raft::resource::sync_stream(res);
 
   return std::make_tuple(neighbors_array, distances_array);
+}
+
+// ─── Multi-label AND search ───────────────────────────────────────────────
+std::tuple<py::array_t<uint32_t>, py::array_t<float>>
+PyVecFlow::search_multi(py::array_t<float> queries,
+                        py::array_t<int> query_labels_a,
+                        py::array_t<int> query_labels_b,
+                        int itopk_size,
+                        int topk) {
+  if (!idx) {
+    throw std::runtime_error("Index has not been built. Call build(... multi_label=True) first.");
+  }
+  if (idx->dataset_labels.size() == 0) {
+    throw std::runtime_error(
+      "search_multi requires an index built with multi_label=True; "
+      "the dataset_labels CSR is empty. Rebuild with multi_label=True.");
+  }
+
+  auto q_info = queries.request();
+  const int n_queries = static_cast<int>(q_info.shape[0]);
+  const int dim       = static_cast<int>(q_info.shape[1]);
+
+  // Move queries to device (host-or-GPU pointer; raft::copy handles both).
+  auto d_queries = raft::make_device_matrix<float, int64_t>(res, n_queries, dim);
+  raft::copy(d_queries.data_handle(),
+             static_cast<float*>(q_info.ptr),
+             n_queries * dim,
+             raft::resource::get_cuda_stream(res));
+
+  // Move both label arrays to device, converting int → uint32_t as needed.
+  auto d_lbl_a = raft::make_device_vector<uint32_t, int64_t>(res, n_queries);
+  auto d_lbl_b = raft::make_device_vector<uint32_t, int64_t>(res, n_queries);
+  auto copy_labels = [&](py::array_t<int>& src, raft::device_vector<uint32_t, int64_t>& dst) {
+    auto info = src.request();
+    if (is_gpu_numpy_array(src)) {
+      raft::copy(dst.data_handle(),
+                 static_cast<uint32_t*>(info.ptr),
+                 n_queries,
+                 raft::resource::get_cuda_stream(res));
+    } else {
+      std::vector<uint32_t> h(n_queries);
+      auto* p = static_cast<int*>(info.ptr);
+      for (int i = 0; i < n_queries; i++) h[i] = static_cast<uint32_t>(p[i]);
+      raft::copy(dst.data_handle(), h.data(), n_queries, raft::resource::get_cuda_stream(res));
+    }
+  };
+  copy_labels(query_labels_a, d_lbl_a);
+  copy_labels(query_labels_b, d_lbl_b);
+
+  auto d_nbr = raft::make_device_matrix<uint32_t, int64_t>(res, n_queries, topk);
+  auto d_dst = raft::make_device_matrix<float,    int64_t>(res, n_queries, topk);
+
+  // raft::device_vector<uint32_t> isn't directly viewable as `const uint32_t`;
+  // wrap the underlying handles into device_vector_view<const uint32_t,...>.
+  auto a_view = raft::make_device_vector_view<const uint32_t, int64_t>(d_lbl_a.data_handle(), n_queries);
+  auto b_view = raft::make_device_vector_view<const uint32_t, int64_t>(d_lbl_b.data_handle(), n_queries);
+
+  vecflow::search_multi_labels(res,
+                               *idx,
+                               raft::make_const_mdspan(d_queries.view()),
+                               a_view, b_view,
+                               itopk_size,
+                               d_nbr.view(),
+                               d_dst.view());
+  raft::resource::sync_stream(res);
+
+  // Copy results back to host.
+  std::vector<py::ssize_t> shape = {n_queries, topk};
+  py::array_t<uint32_t> nbr_arr(shape);
+  py::array_t<float>    dst_arr(shape);
+  auto nb = nbr_arr.request();
+  auto db = dst_arr.request();
+  raft::copy(static_cast<uint32_t*>(nb.ptr), d_nbr.data_handle(), n_queries * topk, raft::resource::get_cuda_stream(res));
+  raft::copy(static_cast<float*>(db.ptr),    d_dst.data_handle(), n_queries * topk, raft::resource::get_cuda_stream(res));
+  raft::resource::sync_stream(res);
+  return std::make_tuple(nbr_arr, dst_arr);
 }
 
 __global__ void convert_int64_to_uint32(const int64_t* input, uint32_t* output, int n) {

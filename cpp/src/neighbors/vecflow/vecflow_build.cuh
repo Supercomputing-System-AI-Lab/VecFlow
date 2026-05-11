@@ -33,9 +33,10 @@ auto build(shared_resources::configured_raft_resources& res,
            int specificity_threshold,
            const std::string& graph_fname,
            const std::string& bfs_fname,
-           bool force_rebuild) -> cuvs::neighbors::vecflow::index<data_t> {
+           bool force_rebuild,
+           bool multi_label) -> cuvs::neighbors::vecflow::index<data_t> {
 
-  std::vector<int> cat_freq(data_label_vecs.size(), 0);
+  std::vector<int> label_freq(data_label_vecs.size(), 0);
 
   int max_label = 0;
   for (size_t i = 0; i < data_label_vecs.size(); i++) {
@@ -44,11 +45,11 @@ auto build(shared_resources::configured_raft_resources& res,
     }
   }
 
-  cat_freq.resize(max_label + 1, 0);
+  label_freq.resize(max_label + 1, 0);
   std::vector<std::vector<int>> label_data_vecs(max_label + 1);
   for (size_t i = 0; i < data_label_vecs.size(); i++) {
     for (size_t j = 0; j < data_label_vecs[i].size(); j++) {
-      cat_freq[data_label_vecs[i][j]] += 1;
+      label_freq[data_label_vecs[i][j]] += 1;
       label_data_vecs[data_label_vecs[i][j]].push_back(i);
     }
   }
@@ -59,24 +60,24 @@ auto build(shared_resources::configured_raft_resources& res,
   int64_t bfs_total_rows = 0;
   int cagra_labels = 0;
   int bfs_labels = 0;
-  std::vector<uint32_t> host_cagra_label_size(label_number);
-  std::vector<uint32_t> host_cagra_label_offset(label_number);
+  std::vector<uint32_t> host_graph_label_size(label_number);
+  std::vector<uint32_t> host_graph_label_offset(label_number);
   std::vector<uint32_t> host_bfs_label_size(label_number);
   std::vector<uint32_t> host_bfs_label_offset(label_number);
-  std::vector<uint32_t> host_cat_freq(label_number);
+  std::vector<uint32_t> host_label_freq(label_number);
   for (uint32_t i = 0; i < label_number; i++) {
-    host_cat_freq[i] = cat_freq[i];
+    host_label_freq[i] = label_freq[i];
     auto n_rows = label_data_vecs[i].size();
-    if (cat_freq[i] > specificity_threshold) {
-      host_cagra_label_size[i] = n_rows;
-      host_cagra_label_offset[i] = cagra_total_rows;
+    if (label_freq[i] > specificity_threshold) {
+      host_graph_label_size[i] = n_rows;
+      host_graph_label_offset[i] = cagra_total_rows;
       host_bfs_label_size[i] = 0;
       host_bfs_label_offset[i] = bfs_total_rows;
       cagra_total_rows += n_rows;
       cagra_labels++;
     } else {
-      host_cagra_label_size[i] = 0;
-      host_cagra_label_offset[i] = cagra_total_rows;
+      host_graph_label_size[i] = 0;
+      host_graph_label_offset[i] = cagra_total_rows;
       host_bfs_label_size[i] = n_rows;
       host_bfs_label_offset[i] = bfs_total_rows;
       bfs_total_rows += n_rows;
@@ -84,14 +85,14 @@ auto build(shared_resources::configured_raft_resources& res,
     }
   }
 
-  std::vector<uint32_t> host_cagra_index_map(cagra_total_rows);
+  std::vector<uint32_t> host_graph_index_map(cagra_total_rows);
   std::vector<uint32_t> host_bfs_index_map(bfs_total_rows);
   uint32_t bfs_iter = 0;
   uint32_t cagra_iter = 0;
   for (uint32_t i = 0; i < label_number; i++) {
-    if (cat_freq[i] > specificity_threshold) {
+    if (label_freq[i] > specificity_threshold) {
       for (uint32_t j = 0; j < label_data_vecs[i].size(); j++) {
-        host_cagra_index_map[cagra_iter] = label_data_vecs[i][j];
+        host_graph_index_map[cagra_iter] = label_data_vecs[i][j];
         cagra_iter++;
       }
     } else {
@@ -102,30 +103,30 @@ auto build(shared_resources::configured_raft_resources& res,
     }
   }
 
-  auto cagra_index_map = raft::make_device_vector<uint32_t, int64_t>(res, cagra_total_rows);
-  auto cagra_label_size = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
-  auto cagra_label_offset = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
+  auto graph_index_map = raft::make_device_vector<uint32_t, int64_t>(res, cagra_total_rows);
+  auto graph_label_size = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
+  auto graph_label_offset = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
   auto bfs_label_size = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
-  auto d_cat_freq = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
+  auto d_label_freq = raft::make_device_vector<uint32_t, int64_t>(res, label_number);
 
-  raft::update_device(cagra_label_size.data_handle(), 
-                      host_cagra_label_size.data(), 
+  raft::update_device(graph_label_size.data_handle(), 
+                      host_graph_label_size.data(), 
                       label_number,
                       raft::resource::get_cuda_stream(res));
-  raft::update_device(cagra_label_offset.data_handle(),
-                      host_cagra_label_offset.data(),
+  raft::update_device(graph_label_offset.data_handle(),
+                      host_graph_label_offset.data(),
                       label_number,
                       raft::resource::get_cuda_stream(res));
-  raft::update_device(cagra_index_map.data_handle(),
-                      host_cagra_index_map.data(),
+  raft::update_device(graph_index_map.data_handle(),
+                      host_graph_index_map.data(),
                       cagra_total_rows,
                       raft::resource::get_cuda_stream(res));
   raft::update_device(bfs_label_size.data_handle(), 
                       host_bfs_label_size.data(), 
                       label_number,
                       raft::resource::get_cuda_stream(res));
-  raft::update_device(d_cat_freq.data_handle(), 
-                      host_cat_freq.data(), 
+  raft::update_device(d_label_freq.data_handle(), 
+                      host_label_freq.data(), 
                       label_number,
                       raft::resource::get_cuda_stream(res));
 
@@ -143,7 +144,7 @@ auto build(shared_resources::configured_raft_resources& res,
   if (cagra_labels > 0) {
     ivf_graph_index.update_dataset(res, raft::make_const_mdspan(dataset));
     auto host_final_graph = raft::make_host_matrix<uint32_t, int64_t>(cagra_total_rows, graph_degree);
-    if (std::filesystem::exists(graph_fname) && !force_rebuild) {  
+    if (std::filesystem::exists(graph_fname) && !force_rebuild) {
       load_matrix_from_ibin(graph_fname, host_final_graph.view());
       ivf_graph_index.update_graph(res, raft::make_const_mdspan(host_final_graph.view()));
     } else {
@@ -154,7 +155,7 @@ auto build(shared_resources::configured_raft_resources& res,
       std::atomic<size_t> completed_work{0};
       #pragma omp parallel for num_threads(optimal_threads)
       for (uint32_t i = 0; i < label_number; i++) {
-        if (host_cagra_label_size[i] == 0 || label_data_vecs[i].size() == 0) continue;
+        if (host_graph_label_size[i] == 0 || label_data_vecs[i].size() == 0) continue;
 
         int thread_id = omp_get_thread_num();
         shared_resources::thread_id = thread_id;
@@ -194,9 +195,9 @@ auto build(shared_resources::configured_raft_resources& res,
         index_params.attach_dataset_on_build = false; 
         auto index = cagra::build(thread_resources, index_params, raft::make_const_mdspan(filtered_dataset.view()));
         
-        raft::copy(host_final_graph.data_handle() + host_cagra_label_offset[i] * graph_degree, 
+        raft::copy(host_final_graph.data_handle() + host_graph_label_offset[i] * graph_degree, 
                    index.graph().data_handle(), 
-                   host_cagra_label_size[i] * graph_degree, 
+                   host_graph_label_size[i] * graph_degree, 
                    thread_stream);
         raft::resource::sync_stream(thread_resources);
       }   
@@ -247,7 +248,7 @@ auto build(shared_resources::configured_raft_resources& res,
   std::cout << "\nIVF-Graph Index Stats:" << std::endl;
   std::cout << "  Total vectors:  " << ivf_graph_index.size() << std::endl;
   std::cout << "  Number of labels: " << cagra_labels << std::endl;
-  std::cout << "  Graph size:     [" << ivf_graph_index.graph().extent(0) << " × " 
+  std::cout << "  Graph size:     [" << ivf_graph_index.graph().extent(0) << " × "
             << ivf_graph_index.graph().extent(1) << "]" << std::endl;
   std::cout << "  Graph degree:   " << ivf_graph_index.graph_degree() << std::endl;
   // IVF statistics
@@ -255,15 +256,25 @@ auto build(shared_resources::configured_raft_resources& res,
   std::cout << "  Number of labels: " << bfs_labels << std::endl;
   std::cout << "  Number of rows:  " << bfs_total_rows << std::endl;
 
+  // Optional: prepare CSR dataset-label arrays for multi-label AND search.
+  // Empty when `multi_label=false` (zero cost on the single-label path).
+  auto dataset_labels        = raft::make_device_vector<uint32_t, int64_t>(res, 0);
+  auto dataset_label_offsets = raft::make_device_vector<int64_t,  int64_t>(res, 0);
+  if (multi_label) {
+    prepare_dataset_label_csr(res, data_label_vecs, dataset_labels, dataset_label_offsets);
+  }
+
   return cuvs::neighbors::vecflow::index<data_t>{
     std::move(ivf_graph_index),
     std::move(ivf_bfs_index),
     specificity_threshold,
-    std::move(cagra_index_map),
-    std::move(cagra_label_size),
-    std::move(cagra_label_offset),
+    std::move(graph_index_map),
+    std::move(graph_label_size),
+    std::move(graph_label_offset),
     std::move(bfs_label_size),
-    std::move(d_cat_freq)
+    std::move(d_label_freq),
+    std::move(dataset_labels),
+    std::move(dataset_label_offsets)
   };
 }
 
@@ -277,10 +288,12 @@ auto build(shared_resources::configured_raft_resources& res,
            int specificity_threshold,
            const std::string& graph_fname,
            const std::string& bfs_fname,
-           bool force_rebuild) -> cuvs::neighbors::vecflow::index<data_t>
+           bool force_rebuild,
+           bool multi_label) -> cuvs::neighbors::vecflow::index<data_t>
 {
   return cuvs::neighbors::vecflow::detail::build<data_t>(
-    res, dataset, data_label_vecs, graph_degree, specificity_threshold, graph_fname, bfs_fname, force_rebuild);
-} 
+    res, dataset, data_label_vecs, graph_degree, specificity_threshold,
+    graph_fname, bfs_fname, force_rebuild, multi_label);
+}
 
 }  // namespace cuvs::neighbors::vecflow

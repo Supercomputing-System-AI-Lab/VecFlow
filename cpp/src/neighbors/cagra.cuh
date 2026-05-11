@@ -357,7 +357,11 @@ void filtered_search_with_filtering(
   raft::device_vector_view<uint32_t, int64_t> index_map,
   raft::device_vector_view<uint32_t, int64_t> label_size,
   raft::device_vector_view<uint32_t, int64_t> label_offset,
-  CagraSampleFilterT sample_filter = CagraSampleFilterT())
+  CagraSampleFilterT sample_filter            = CagraSampleFilterT(),
+  // Optional multi-label AND inputs — all nullptr means single-label mode.
+  const uint32_t* dataset_labels_ptr          = nullptr,
+  const int64_t*  dataset_label_offsets_ptr   = nullptr,
+  const uint32_t* query_labels_second_ptr     = nullptr)
 {
   RAFT_EXPECTS(
     queries.extent(0) == neighbors.extent(0) && queries.extent(0) == distances.extent(0),
@@ -379,7 +383,8 @@ void filtered_search_with_filtering(
 
   return cagra::detail::filtered_search_main<T, internal_IdxT, CagraSampleFilterT, IdxT>(
     res, params, idx, queries_internal, neighbors_internal, distances_internal,
-    query_labels, index_map, label_size, label_offset, sample_filter);
+    query_labels, index_map, label_size, label_offset, sample_filter,
+    dataset_labels_ptr, dataset_label_offsets_ptr, query_labels_second_ptr);
 }
 
 template <typename T, typename IdxT, typename OutputIdxT = IdxT>
@@ -435,7 +440,10 @@ void filtered_search(raft::resources const& res,
                      raft::device_vector_view<uint32_t, int64_t> index_map,
                      raft::device_vector_view<uint32_t, int64_t> label_size,
                      raft::device_vector_view<uint32_t, int64_t> label_offset,
-                     const cuvs::neighbors::filtering::base_filter& sample_filter_ref)
+                     const cuvs::neighbors::filtering::base_filter& sample_filter_ref,
+                     const uint32_t* dataset_labels_ptr        = nullptr,
+                     const int64_t*  dataset_label_offsets_ptr = nullptr,
+                     const uint32_t* query_labels_second_ptr   = nullptr)
 {
   try {
     using none_filter_type  = cuvs::neighbors::filtering::none_sample_filter;
@@ -443,7 +451,8 @@ void filtered_search(raft::resources const& res,
     auto sample_filter_copy = sample_filter;
     return filtered_search_with_filtering<T, IdxT, none_filter_type>(
       res, params, idx, queries, neighbors, distances,
-      query_labels, index_map, label_size, label_offset, sample_filter_copy);
+      query_labels, index_map, label_size, label_offset, sample_filter_copy,
+      dataset_labels_ptr, dataset_label_offsets_ptr, query_labels_second_ptr);
   } catch (const std::bad_cast&) {
   }
 
@@ -453,7 +462,8 @@ void filtered_search(raft::resources const& res,
     auto sample_filter_copy  = sample_filter;
     return filtered_search_with_filtering<T, IdxT, bitset_filter_type>(
       res, params, idx, queries, neighbors, distances,
-      query_labels, index_map, label_size, label_offset, sample_filter_copy);
+      query_labels, index_map, label_size, label_offset, sample_filter_copy,
+      dataset_labels_ptr, dataset_label_offsets_ptr, query_labels_second_ptr);
   } catch (const std::bad_cast&) {
   }
 

@@ -931,6 +931,8 @@ if(NOT BUILD_CPU_ONLY)
     src/neighbors/vecflow/detail/build_vecflow_int8_t.cu
     src/neighbors/vecflow/detail/search_vecflow_float.cu
     src/neighbors/vecflow/detail/search_vecflow_int8_t.cu
+    src/neighbors/vecflow/detail/search_multi_vecflow_float.cu
+    src/neighbors/vecflow/detail/search_multi_vecflow_int8_t.cu
     ${refine_device_inst_files}
     ${refine_host_inst_files}
     src/neighbors/scann/scann_build_float.cu

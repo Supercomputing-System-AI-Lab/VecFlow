@@ -214,7 +214,6 @@ def main():
 
   # Sweep over itopk_size values, recording throughput + recall for each
   print("\n=== Performing Search Sweep ===")
-  results = []
   for itopk in itopk_sizes:
     # Warm-up
     for _ in range(warmup_runs):
@@ -230,15 +229,7 @@ def main():
 
     # Recall on the last set of neighbors (every iteration is identical anyway)
     recall = compute_recall(neighbors, gt_indices)
-    results.append((itopk, qps, avg_ms, recall))
     print(f"  itopk={itopk:>4}  qps={qps:>10.1f}  avg={avg_ms:>6.3f} ms  recall={recall:.4f}")
-
-  # Compact summary table
-  print("\n=== Summary ===")
-  print(f"  {'itopk_size':>10}  {'qps':>10}  {'avg_ms':>8}  {'recall':>7}")
-  print(f"  {'-'*10}  {'-'*10}  {'-'*8}  {'-'*7}")
-  for itopk, qps, avg_ms, recall in results:
-    print(f"  {itopk:>10}  {qps:>10.1f}  {avg_ms:>8.3f}  {recall:>7.4f}")
 
 if __name__ == "__main__":
   main()

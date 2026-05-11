@@ -29,6 +29,7 @@
 
 #include <raft/util/cuda_rt_essentials.hpp>
 #include <raft/util/integer_utils.hpp>
+#include <raft/util/pow2_utils.cuh>
 
 #include <rmm/cuda_stream.hpp>
 #include <rmm/device_uvector.hpp>
@@ -56,7 +57,7 @@ namespace filtered_single_cta_search {
 
 // #define _CLK_BREAKDOWN
 
-template <unsigned TOPK_BY_BITONIC_SORT, class INDEX_T>
+template <bool TOPK_BY_BITONIC_SORT, class INDEX_T>
 RAFT_DEVICE_INLINE_FUNCTION void pickup_next_parents(std::uint32_t* const terminate_flag,
                                                      INDEX_T* const next_parent_indices,
                                                      INDEX_T* const internal_topk_indices,
@@ -98,24 +99,24 @@ RAFT_DEVICE_INLINE_FUNCTION void pickup_next_parents(std::uint32_t* const termin
   if (threadIdx.x == 0 && (num_new_parents == 0)) { *terminate_flag = 1; }
 }
 
-template <unsigned MAX_CANDIDATES, class IdxT = void>
+template <unsigned MAX_CANDIDATES, bool MULTI_WARPS, class IdxT = void>
 RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_full(
   float* candidate_distances,  // [num_candidates]
   IdxT* candidate_indices,     // [num_candidates]
   const std::uint32_t num_candidates,
-  const std::uint32_t num_itopk,
-  unsigned MULTI_WARPS = 0)
+  const std::uint32_t num_itopk)
 {
-  const unsigned lane_id = threadIdx.x % 32;
-  const unsigned warp_id = threadIdx.x / 32;
-  if (MULTI_WARPS == 0) {
+  const unsigned lane_id = threadIdx.x % raft::warp_size();
+  const unsigned warp_id = threadIdx.x / raft::warp_size();
+  static_assert(MAX_CANDIDATES <= 256);
+  if constexpr (!MULTI_WARPS) {
     if (warp_id > 0) { return; }
-    constexpr unsigned N = (MAX_CANDIDATES + 31) / 32;
+    constexpr unsigned N = (MAX_CANDIDATES + (raft::warp_size() - 1)) / raft::warp_size();
     float key[N];
     IdxT val[N];
     /* Candidates -> Reg */
     for (unsigned i = 0; i < N; i++) {
-      unsigned j = lane_id + (32 * i);
+      unsigned j = lane_id + (raft::warp_size() * i);
       if (j < num_candidates) {
         key[i] = candidate_distances[j];
         val[i] = candidate_indices[j];
@@ -135,15 +136,17 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_full(
       }
     }
   } else {
+    assert(blockDim.x >= 64);
     // Use two warps (64 threads)
     constexpr unsigned max_candidates_per_warp = (MAX_CANDIDATES + 1) / 2;
-    constexpr unsigned N                       = (max_candidates_per_warp + 31) / 32;
+    static_assert(max_candidates_per_warp <= 128);
+    constexpr unsigned N = (max_candidates_per_warp + (raft::warp_size() - 1)) / raft::warp_size();
     float key[N];
     IdxT val[N];
     if (warp_id < 2) {
       /* Candidates -> Reg */
       for (unsigned i = 0; i < N; i++) {
-        unsigned jl = lane_id + (32 * i);
+        unsigned jl = lane_id + (raft::warp_size() * i);
         unsigned j  = jl + (max_candidates_per_warp * warp_id);
         if (j < num_candidates) {
           key[i] = candidate_distances[j];
@@ -187,7 +190,7 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_full(
     if (num_warps_used > 1) { __syncthreads(); }
     if (warp_id < num_warps_used) {
       /* Merge */
-      bitonic::warp_merge<float, IdxT, N>(key, val, 32);
+      bitonic::warp_merge<float, IdxT, N>(key, val, raft::warp_size());
       /* Reg -> Temp_itopk */
       for (unsigned i = 0; i < N; i++) {
         unsigned jl = (N * lane_id) + i;
@@ -202,7 +205,7 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_full(
   }
 }
 
-template <unsigned MAX_ITOPK, class IdxT = void>
+template <unsigned MAX_ITOPK, bool MULTI_WARPS, class IdxT = void>
 RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge(
   float* itopk_distances,  // [num_itopk]
   IdxT* itopk_indices,     // [num_itopk]
@@ -211,20 +214,22 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge(
   IdxT* candidate_indices,     // [num_candidates]
   const std::uint32_t num_candidates,
   std::uint32_t* work_buf,
-  const bool first,
-  unsigned MULTI_WARPS = 0)
+  const bool first)
 {
-  const unsigned lane_id = threadIdx.x % 32;
-  const unsigned warp_id = threadIdx.x / 32;
-  if (MULTI_WARPS == 0) {
+  const unsigned lane_id = threadIdx.x % raft::warp_size();
+  const unsigned warp_id = threadIdx.x / raft::warp_size();
+
+  static_assert(MAX_ITOPK <= 512);
+  if constexpr (!MULTI_WARPS) {
+    static_assert(MAX_ITOPK <= 256);
     if (warp_id > 0) { return; }
-    constexpr unsigned N = (MAX_ITOPK + 31) / 32;
+    constexpr unsigned N = (MAX_ITOPK + (raft::warp_size() - 1)) / raft::warp_size();
     float key[N];
     IdxT val[N];
     if (first) {
       /* Load itopk results */
       for (unsigned i = 0; i < N; i++) {
-        unsigned j = lane_id + (32 * i);
+        unsigned j = lane_id + (raft::warp_size() * i);
         if (j < num_itopk) {
           key[i] = itopk_distances[j];
           val[i] = itopk_indices[j];
@@ -250,7 +255,7 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge(
     }
     /* Merge candidates */
     for (unsigned i = 0; i < N; i++) {
-      unsigned j = (N * lane_id) + i;  // [0:MAX_ITOPK-1]
+      unsigned j = (N * lane_id) + i;  // [0:max_itopk-1]
       unsigned k = MAX_ITOPK - 1 - j;
       if (k >= num_itopk || k >= num_candidates) continue;
       float candidate_key = candidate_distances[device::swizzling(k)];
@@ -260,7 +265,7 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge(
       }
     }
     /* Warp Merge */
-    bitonic::warp_merge<float, IdxT, N>(key, val, 32);
+    bitonic::warp_merge<float, IdxT, N>(key, val, raft::warp_size());
     /* Store new itopk results */
     for (unsigned i = 0; i < N; i++) {
       unsigned j = (N * lane_id) + i;
@@ -270,16 +275,18 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge(
       }
     }
   } else {
+    static_assert(MAX_ITOPK == 512);
+    assert(blockDim.x >= 64);
     // Use two warps (64 threads) or more
     constexpr unsigned max_itopk_per_warp = (MAX_ITOPK + 1) / 2;
-    constexpr unsigned N                  = (max_itopk_per_warp + 31) / 32;
+    constexpr unsigned N = (max_itopk_per_warp + (raft::warp_size() - 1)) / raft::warp_size();
     float key[N];
     IdxT val[N];
     if (first) {
       /* Load itop results (not sorted) */
       if (warp_id < 2) {
         for (unsigned i = 0; i < N; i++) {
-          unsigned j = lane_id + (32 * i) + (max_itopk_per_warp * warp_id);
+          unsigned j = lane_id + (raft::warp_size() * i) + (max_itopk_per_warp * warp_id);
           if (j < num_itopk) {
             key[i] = itopk_distances[j];
             val[i] = itopk_indices[j];
@@ -313,7 +320,7 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge(
           }
         }
         /* Warp Merge */
-        bitonic::warp_merge<float, IdxT, N>(key, val, 32);
+        bitonic::warp_merge<float, IdxT, N>(key, val, raft::warp_size());
       }
       __syncthreads();
       /* Store itopk results (sorted) */
@@ -395,7 +402,7 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge(
         }
       }
       /* Warp Merge */
-      bitonic::warp_merge<float, IdxT, N>(key, val, 32);
+      bitonic::warp_merge<float, IdxT, N>(key, val, raft::warp_size());
       /* Store new itopk results */
       for (unsigned i = 0; i < N; i++) {
         const unsigned j = (N * lane_id) + i;
@@ -409,36 +416,170 @@ RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge(
   }
 }
 
-template <unsigned MAX_ITOPK,
-          unsigned MAX_CANDIDATES,
-          class IdxT>
+RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_full_wrapper_64_false(
+  float* candidate_distances,        // [num_candidates]
+  std::uint32_t* candidate_indices,  // [num_candidates]
+  const std::uint32_t num_candidates,
+  const std::uint32_t num_itopk)
+{
+  topk_by_bitonic_sort_and_full<64, false, uint32_t>(
+    candidate_distances, candidate_indices, num_candidates, num_itopk);
+}
+
+RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_full_wrapper_128_false(
+  float* candidate_distances,        // [num_candidates]
+  std::uint32_t* candidate_indices,  // [num_candidates]
+  const std::uint32_t num_candidates,
+  const std::uint32_t num_itopk)
+{
+  topk_by_bitonic_sort_and_full<128, false, uint32_t>(
+    candidate_distances, candidate_indices, num_candidates, num_itopk);
+}
+
+RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_full_wrapper_256_false(
+  float* candidate_distances,        // [num_candidates]
+  std::uint32_t* candidate_indices,  // [num_candidates]
+  const std::uint32_t num_candidates,
+  const std::uint32_t num_itopk)
+{
+  topk_by_bitonic_sort_and_full<256, false, uint32_t>(
+    candidate_distances, candidate_indices, num_candidates, num_itopk);
+}
+
+RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge_wrapper_64_false(
+  float* itopk_distances,   // [num_itopk]
+  uint32_t* itopk_indices,  // [num_itopk]
+  const std::uint32_t num_itopk,
+  float* candidate_distances,   // [num_candidates]
+  uint32_t* candidate_indices,  // [num_candidates]
+  const std::uint32_t num_candidates,
+  std::uint32_t* work_buf,
+  const bool first)
+{
+  topk_by_bitonic_sort_and_merge<64, false, uint32_t>(itopk_distances,
+                                                      itopk_indices,
+                                                      num_itopk,
+                                                      candidate_distances,
+                                                      candidate_indices,
+                                                      num_candidates,
+                                                      work_buf,
+                                                      first);
+}
+
+RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge_wrapper_128_false(
+  float* itopk_distances,   // [num_itopk]
+  uint32_t* itopk_indices,  // [num_itopk]
+  const std::uint32_t num_itopk,
+  float* candidate_distances,   // [num_candidates]
+  uint32_t* candidate_indices,  // [num_candidates]
+  const std::uint32_t num_candidates,
+  std::uint32_t* work_buf,
+  const bool first)
+{
+  topk_by_bitonic_sort_and_merge<128, false, uint32_t>(itopk_distances,
+                                                       itopk_indices,
+                                                       num_itopk,
+                                                       candidate_distances,
+                                                       candidate_indices,
+                                                       num_candidates,
+                                                       work_buf,
+                                                       first);
+}
+
+RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge_wrapper_256_false(
+  float* itopk_distances,   // [num_itopk]
+  uint32_t* itopk_indices,  // [num_itopk]
+  const std::uint32_t num_itopk,
+  float* candidate_distances,   // [num_candidates]
+  uint32_t* candidate_indices,  // [num_candidates]
+  const std::uint32_t num_candidates,
+  std::uint32_t* work_buf,
+  const bool first)
+{
+  topk_by_bitonic_sort_and_merge<256, false, uint32_t>(itopk_distances,
+                                                       itopk_indices,
+                                                       num_itopk,
+                                                       candidate_distances,
+                                                       candidate_indices,
+                                                       num_candidates,
+                                                       work_buf,
+                                                       first);
+}
+
+template <bool MULTI_WARPS, class IdxT>
 RAFT_DEVICE_INLINE_FUNCTION void topk_by_bitonic_sort_and_merge(
   float* itopk_distances,  // [num_itopk]
   IdxT* itopk_indices,     // [num_itopk]
+  const std::uint32_t max_itopk,
   const std::uint32_t num_itopk,
   float* candidate_distances,  // [num_candidates]
   IdxT* candidate_indices,     // [num_candidates]
+  const std::uint32_t max_candidates,
   const std::uint32_t num_candidates,
   std::uint32_t* work_buf,
-  const bool first,
-  const unsigned MULTI_WARPS_1,
-  const unsigned MULTI_WARPS_2)
+  const bool first)
 {
-  // The results in candidate_distances/indices are sorted by bitonic sort.
-   topk_by_bitonic_sort_and_full<MAX_CANDIDATES, IdxT>(
-    candidate_distances, candidate_indices, num_candidates, num_itopk, MULTI_WARPS_1);
+  static_assert(std::is_same_v<IdxT, uint32_t>);
+  assert(max_itopk <= 512);
+  assert(max_candidates <= 256);
+  assert(!MULTI_WARPS || blockDim.x >= 64);
 
-  // The results sorted above are merged with the internal intermediate top-k
-  // results so far using bitonic merge.
-  topk_by_bitonic_sort_and_merge<MAX_ITOPK, IdxT>(itopk_distances,
-                                                  itopk_indices,
-                                                  num_itopk,
-                                                  candidate_distances,
-                                                  candidate_indices,
-                                                  num_candidates,
-                                                  work_buf,
-                                                  first,
-                                                  MULTI_WARPS_2);
+  // use a non-template wrapper function to avoid pre-inlining the topk_by_bitonic_sort_and_full
+  // function (vs post-inlining, this impacts register pressure)
+  if (max_candidates <= 64) {
+    topk_by_bitonic_sort_and_full_wrapper_64_false(
+      candidate_distances, candidate_indices, num_candidates, num_itopk);
+  } else if (max_candidates <= 128) {
+    topk_by_bitonic_sort_and_full_wrapper_128_false(
+      candidate_distances, candidate_indices, num_candidates, num_itopk);
+  } else {
+    topk_by_bitonic_sort_and_full_wrapper_256_false(
+      candidate_distances, candidate_indices, num_candidates, num_itopk);
+  }
+
+  if constexpr (!MULTI_WARPS) {
+    assert(max_itopk <= 256);
+    // use a non-template wrapper function to avoid pre-inlining the topk_by_bitonic_sort_and_merge
+    // function (vs post-inlining, this impacts register pressure)
+    if (max_itopk <= 64) {
+      topk_by_bitonic_sort_and_merge_wrapper_64_false(itopk_distances,
+                                                      itopk_indices,
+                                                      num_itopk,
+                                                      candidate_distances,
+                                                      candidate_indices,
+                                                      num_candidates,
+                                                      work_buf,
+                                                      first);
+    } else if (max_itopk <= 128) {
+      topk_by_bitonic_sort_and_merge_wrapper_128_false(itopk_distances,
+                                                       itopk_indices,
+                                                       num_itopk,
+                                                       candidate_distances,
+                                                       candidate_indices,
+                                                       num_candidates,
+                                                       work_buf,
+                                                       first);
+    } else {
+      topk_by_bitonic_sort_and_merge_wrapper_256_false(itopk_distances,
+                                                       itopk_indices,
+                                                       num_itopk,
+                                                       candidate_distances,
+                                                       candidate_indices,
+                                                       num_candidates,
+                                                       work_buf,
+                                                       first);
+    }
+  } else {
+    assert(max_itopk > 256);
+    topk_by_bitonic_sort_and_merge<512, MULTI_WARPS, uint32_t>(itopk_distances,
+                                                               itopk_indices,
+                                                               num_itopk,
+                                                               candidate_distances,
+                                                               candidate_indices,
+                                                               num_candidates,
+                                                               work_buf,
+                                                               first);
+  }
 }
 // This function move the invalid index element to the end of the itopk list.
 // Require : array_length % 32 == 0 && The invalid entry is only one.
@@ -494,28 +635,28 @@ RAFT_DEVICE_INLINE_FUNCTION void hashmap_restore(INDEX_T* const hashmap_ptr,
 }
 
 // One query one thread block
-template <unsigned MAX_ITOPK,
-          unsigned MAX_CANDIDATES,
-          unsigned TOPK_BY_BITONIC_SORT,
+template <bool TOPK_BY_BITONIC_SORT,
+          bool BITONIC_SORT_AND_MERGE_MULTI_WARPS,
           class DATASET_DESCRIPTOR_T,
+          class SourceIndexT,
           class SAMPLE_FILTER_T>
-__device__ void search_core(
-  typename DATASET_DESCRIPTOR_T::INDEX_T* const result_indices_ptr,       // [num_queries, top_k]
+RAFT_DEVICE_INLINE_FUNCTION void search_core(
+  uintptr_t result_indices_ptr,                                           // [num_queries, top_k]
   typename DATASET_DESCRIPTOR_T::DISTANCE_T* const result_distances_ptr,  // [num_queries, top_k]
   const std::uint32_t top_k,
   const DATASET_DESCRIPTOR_T* dataset_desc,
   const typename DATASET_DESCRIPTOR_T::DATA_T* const queries_ptr,  // [num_queries, dataset_dim]
-  const uint32_t* index_map_ptr,                                   // [graph size]
-  const uint32_t label_size,
-  const uint32_t label_offset,
   const typename DATASET_DESCRIPTOR_T::INDEX_T* const knn_graph,   // [dataset_size, graph_degree]
   const std::uint32_t graph_degree,
+  const SourceIndexT* source_indices_ptr,
   const unsigned num_distilation,
   const uint64_t rand_xor_mask,
   const typename DATASET_DESCRIPTOR_T::INDEX_T* seed_ptr,  // [num_queries, num_seeds]
   const uint32_t num_seeds,
   typename DATASET_DESCRIPTOR_T::INDEX_T* const
     visited_hashmap_ptr,  // [num_queries, 1 << hash_bitlen]
+  const std::uint32_t max_candidates,
+  const std::uint32_t max_itopk,
   const std::uint32_t internal_topk,
   const std::uint32_t search_width,
   const std::uint32_t min_iteration,
@@ -525,13 +666,36 @@ __device__ void search_core(
   const std::uint32_t small_hash_bitlen,
   const std::uint32_t small_hash_reset_interval,
   const std::uint32_t query_id,
-  SAMPLE_FILTER_T sample_filter)
+  SAMPLE_FILTER_T sample_filter,
+  const typename DATASET_DESCRIPTOR_T::INDEX_T graph_size = 0,
+  // Filtered-search routing (per-label graph slice).
+  const uint32_t* index_map_ptr                   = nullptr,
+  const uint32_t label_size                       = 0,
+  const uint32_t label_offset                     = 0,
+  // Optional multi-label AND inputs — null when AND mode disabled.
+  const uint32_t* const dataset_labels_ptr        = nullptr,
+  const int64_t*  const dataset_label_offsets_ptr = nullptr,
+  const uint32_t* const query_labels_second_ptr   = nullptr)
 {
   using LOAD_T = device::LOAD_128BIT_T;
 
   using DATA_T     = typename DATASET_DESCRIPTOR_T::DATA_T;
   using INDEX_T    = typename DATASET_DESCRIPTOR_T::INDEX_T;
   using DISTANCE_T = typename DATASET_DESCRIPTOR_T::DISTANCE_T;
+
+  auto to_source_index = [source_indices_ptr](INDEX_T x) {
+    return source_indices_ptr == nullptr ? static_cast<SourceIndexT>(x) : source_indices_ptr[x];
+  };
+
+  // Multi-label AND mode is active when the caller passed a non-null
+  // secondary-label buffer. We do not require dataset_labels_ptr /
+  // dataset_label_offsets_ptr to be checked separately: when AND mode is
+  // active the caller is contractually required to provide all three.
+  constexpr bool kHasSampleFilter =
+    !std::is_same<SAMPLE_FILTER_T, cuvs::neighbors::filtering::none_sample_filter>::value;
+  const bool and_mode_active = (query_labels_second_ptr != nullptr);
+  const uint32_t target_label_second =
+    and_mode_active ? query_labels_second_ptr[query_id] : uint32_t{0};
 
 #ifdef _CLK_BREAKDOWN
   std::uint64_t clk_init                 = 0;
@@ -600,29 +764,24 @@ __device__ void search_core(
   _CLK_START();
   const INDEX_T* const local_seed_ptr = seed_ptr ? seed_ptr + (num_seeds * query_id) : nullptr;
   device::filtered_compute_distance_to_random_nodes(result_indices_buffer,
-                                          result_distances_buffer,
-                                          *dataset_desc,
-                                          result_buffer_size,
-                                          num_distilation,
-                                          rand_xor_mask,
-                                          local_seed_ptr,
-                                          index_map_ptr,
-                                          label_size,
-                                          label_offset,
-                                          num_seeds,
-                                          local_visited_hashmap_ptr,
-                                          hash_bitlen);
-
-  // device::compute_distance_to_random_nodes(result_indices_buffer,
-  //                                         result_distances_buffer,
-  //                                         *dataset_desc,
-  //                                         result_buffer_size,
-  //                                         num_distilation,
-  //                                         rand_xor_mask,
-  //                                         local_seed_ptr,
-  //                                         num_seeds,
-  //                                         local_visited_hashmap_ptr,
-  //                                         hash_bitlen);                                              
+                                                    result_distances_buffer,
+                                                    *dataset_desc,
+                                                    result_buffer_size,
+                                                    num_distilation,
+                                                    rand_xor_mask,
+                                                    local_seed_ptr,
+                                                    num_seeds,
+                                                    local_visited_hashmap_ptr,
+                                                    hash_bitlen,
+                                                    (INDEX_T*)nullptr,
+                                                    0,
+                                                    /*block_id=*/0,
+                                                    /*num_blocks=*/1,
+                                                    graph_size,
+                                                    // Per-label routing.
+                                                    index_map_ptr,
+                                                    label_size,
+                                                    label_offset);                                           
   __syncthreads();
   _CLK_REC(clk_compute_1st_distance);
 
@@ -635,10 +794,10 @@ __device__ void search_core(
       // batch size is small (short-latency), but it might not be always good
       // when batch size is large (high-throughput).
       // topk_by_bitonic_sort_and_merge() consists of two operations:
-      // if MAX_CANDIDATES is greater than 128, the first operation uses two warps;
-      // if MAX_ITOPK is greater than 256, the second operation used two warps.
-      const unsigned multi_warps_1 = ((blockDim.x >= 64) && (MAX_CANDIDATES > 128)) ? 1 : 0;
-      const unsigned multi_warps_2 = ((blockDim.x >= 64) && (MAX_ITOPK > 256)) ? 1 : 0;
+      // if max_candidates is greater than 128, the first operation uses two warps;
+      // if max_itopk is greater than 256, the second operation used two warps.
+      assert(blockDim.x >= 64);
+      const bool bitonic_sort_and_full_multi_warps = (max_candidates > 128) ? true : false;
 
       // reset small-hash table.
       if ((iter + 1) % small_hash_reset_interval == 0) {
@@ -651,13 +810,13 @@ __device__ void search_core(
         if (blockDim.x == 32) {
           hash_start_tid = 0;
         } else if (blockDim.x == 64) {
-          if (multi_warps_1 || multi_warps_2) {
+          if (bitonic_sort_and_full_multi_warps || BITONIC_SORT_AND_MERGE_MULTI_WARPS) {
             hash_start_tid = 0;
           } else {
             hash_start_tid = 32;
           }
         } else {
-          if (multi_warps_1 || multi_warps_2) {
+          if (bitonic_sort_and_full_multi_warps || BITONIC_SORT_AND_MERGE_MULTI_WARPS) {
             hash_start_tid = 64;
           } else {
             hash_start_tid = 32;
@@ -669,8 +828,11 @@ __device__ void search_core(
 
       // topk with bitonic sort
       _CLK_START();
-      if (!(std::is_same<SAMPLE_FILTER_T, cuvs::neighbors::filtering::none_sample_filter>::value ||
-          *filter_flag == 0)) {
+      // Fire the compaction whenever the filter pass produced any invalids
+      // (filter_flag != 0). Both the single-label SAMPLE_FILTER_T path and
+      // the multi-label AND inline check raise the same filter_flag, so a
+      // single condition gates both.
+      if (*filter_flag != 0 && (kHasSampleFilter || and_mode_active)) {
         // Move the filtered out index to the end of the itopk list
         for (unsigned i = 0; i < search_width; i++) {
           move_invalid_to_end_of_list(
@@ -678,34 +840,33 @@ __device__ void search_core(
         }
         if (threadIdx.x == 0) { *terminate_flag = 0; }
       }
-      topk_by_bitonic_sort_and_merge<MAX_ITOPK, MAX_CANDIDATES>(
+      topk_by_bitonic_sort_and_merge<BITONIC_SORT_AND_MERGE_MULTI_WARPS>(
         result_distances_buffer,
         result_indices_buffer,
+        max_itopk,
         internal_topk,
         result_distances_buffer + internal_topk,
         result_indices_buffer + internal_topk,
+        max_candidates,
         search_width * graph_degree,
         topk_ws,
-        (iter == 0),
-        multi_warps_1,
-        multi_warps_2);
+        (iter == 0));
       __syncthreads();
       _CLK_REC(clk_topk);
     } else {
       _CLK_START();
       // topk with radix block sort
-      topk_by_radix_sort<MAX_ITOPK, INDEX_T>{}(
-        internal_topk,
-        gridDim.x,
-        result_buffer_size,
-        reinterpret_cast<std::uint32_t*>(result_distances_buffer),
-        result_indices_buffer,
-        reinterpret_cast<std::uint32_t*>(result_distances_buffer),
-        result_indices_buffer,
-        nullptr,
-        topk_ws,
-        true,
-        smem_work_ptr);
+      topk_by_radix_sort<INDEX_T>{}(max_itopk,
+                                    internal_topk,
+                                    result_buffer_size,
+                                    reinterpret_cast<std::uint32_t*>(result_distances_buffer),
+                                    result_indices_buffer,
+                                    reinterpret_cast<std::uint32_t*>(result_distances_buffer),
+                                    result_indices_buffer,
+                                    nullptr,
+                                    topk_ws,
+                                    true,
+                                    smem_work_ptr);
       _CLK_REC(clk_topk);
 
       // reset small-hash table
@@ -741,82 +902,165 @@ __device__ void search_core(
 
     // compute the norms between child nodes and query node
     _CLK_START();
-    device::filtered_compute_distance_to_child_nodes(
-      result_indices_buffer + internal_topk,
-      result_distances_buffer + internal_topk,
-      *dataset_desc,
-      knn_graph,
-      graph_degree,
-      local_visited_hashmap_ptr,
-      index_map_ptr,
-      label_size,
-      label_offset,
-      hash_bitlen,
-      parent_list_buffer,
-      result_indices_buffer,
-      search_width);
-    // device::compute_distance_to_child_nodes(
-    //   result_indices_buffer + internal_topk,
-    //   result_distances_buffer + internal_topk,
-    //   *dataset_desc,
-    //   knn_graph,
-    //   graph_degree,
-    //   local_visited_hashmap_ptr,
-    //   hash_bitlen,
-    //   parent_list_buffer,
-    //   result_indices_buffer,
-    //   search_width);
-                                           
+    device::filtered_compute_distance_to_child_nodes(result_indices_buffer + internal_topk,
+                                                     result_distances_buffer + internal_topk,
+                                                     *dataset_desc,
+                                                     knn_graph,
+                                                     graph_degree,
+                                                     local_visited_hashmap_ptr,
+                                                     hash_bitlen,
+                                                     (INDEX_T*)nullptr,
+                                                     0,
+                                                     parent_list_buffer,
+                                                     result_indices_buffer,
+                                                     search_width,
+                                                     // Per-label graph-slice routing (filtered search):
+                                                     // resolves slice-local node ids to global ids via
+                                                     // index_map_ptr at offset = label_offset, length = label_size.
+                                                     index_map_ptr,
+                                                     label_size,
+                                                     label_offset);
     __syncthreads();
     _CLK_REC(clk_compute_distance);
 
-    // Filtering
-    if constexpr (!std::is_same<SAMPLE_FILTER_T,
-                                cuvs::neighbors::filtering::none_sample_filter>::value) {
+    // Filtering — two independent per-thread sweeps over `parent_list_buffer`,
+    // each mirroring upstream's `search_single_cta_kernel-inl.cuh:933-954`
+    // SAMPLE_FILTER pattern. SAMPLE_FILTER and AND mode are independent;
+    // either, both, or neither may be active. `filter_flag` is reset once and
+    // raised by whichever path invalidates a parent. NOTE: in addition to
+    // upstream's two writes, both paths also clear `parent_list_buffer[p]`
+    // itself — without that, next iter's filtered_compute_distance_to_child_nodes
+    // reads `invalid_index & ~msb_mask` as a parent_id and OOB-loads knn_graph.
+    if (kHasSampleFilter || and_mode_active) {
       if (threadIdx.x == 0) { *filter_flag = 0; }
       __syncthreads();
 
       constexpr INDEX_T index_msb_1_mask = utils::gen_index_msb_1_mask<INDEX_T>::value;
       const INDEX_T invalid_index        = utils::get_max_value<INDEX_T>();
 
-      for (unsigned p = threadIdx.x; p < search_width; p += blockDim.x) {
-        if (parent_list_buffer[p] != invalid_index) {
-          const auto parent_id = result_indices_buffer[parent_list_buffer[p]] & ~index_msb_1_mask;
-          const auto sample_id = index_map_ptr[parent_id + label_offset];
-          if (!sample_filter(query_id, sample_id)) {
-            // If the parent must not be in the resulting top-k list, remove from the parent list
-            result_distances_buffer[parent_list_buffer[p]] = utils::get_max_value<DISTANCE_T>();
-            result_indices_buffer[parent_list_buffer[p]]   = invalid_index;
-            *filter_flag                                   = 1;
+      // Single-label SAMPLE_FILTER_T sweep. Compile-time elided when
+      // SAMPLE_FILTER_T == none_sample_filter.
+      if constexpr (kHasSampleFilter) {
+        for (unsigned p = threadIdx.x; p < search_width; p += blockDim.x) {
+          if (parent_list_buffer[p] != invalid_index) {
+            const auto parent_id = result_indices_buffer[parent_list_buffer[p]] & ~index_msb_1_mask;
+            const auto sample_id = index_map_ptr[parent_id + label_offset];
+            if (!sample_filter(query_id, sample_id)) {
+              result_distances_buffer[parent_list_buffer[p]] = utils::get_max_value<DISTANCE_T>();
+              result_indices_buffer[parent_list_buffer[p]]   = invalid_index;
+              parent_list_buffer[p]                          = invalid_index;
+              *filter_flag                                   = 1;
+            }
           }
         }
+        __syncthreads();
       }
-      __syncthreads();
+
+      // Multi-label AND sweep — per-thread, binary search on the (sorted)
+      // per-sample label slice for `target_label_second`.
+      if (and_mode_active) {
+        for (unsigned p = threadIdx.x; p < search_width; p += blockDim.x) {
+          if (parent_list_buffer[p] != invalid_index) {
+            const auto parent_id = result_indices_buffer[parent_list_buffer[p]] & ~index_msb_1_mask;
+            const auto sample_id = index_map_ptr[parent_id + label_offset];
+            int64_t lo = dataset_label_offsets_ptr[sample_id];
+            int64_t hi = dataset_label_offsets_ptr[sample_id + 1];
+            bool found = false;
+            while (lo < hi) {
+              const int64_t mid = lo + ((hi - lo) >> 1);
+              const uint32_t v  = dataset_labels_ptr[mid];
+              if (v == target_label_second) {
+                found = true;
+                break;
+              }
+              if (v < target_label_second) {
+                lo = mid + 1;
+              } else {
+                hi = mid;
+              }
+            }
+            if (!found) {
+              result_distances_buffer[parent_list_buffer[p]] = utils::get_max_value<DISTANCE_T>();
+              result_indices_buffer[parent_list_buffer[p]]   = invalid_index;
+              parent_list_buffer[p]                          = invalid_index;
+              *filter_flag                                   = 1;
+            }
+          }
+        }
+        __syncthreads();
+      }
     }
 
     iter++;
   }
 
-  // Post process for filtering
-  if constexpr (!std::is_same<SAMPLE_FILTER_T,
-                              cuvs::neighbors::filtering::none_sample_filter>::value) {
+  // Post process for filtering. Runs whenever any filter mode is active —
+  // single-label SAMPLE_FILTER_T or multi-label AND inline check. Both modes
+  // write into the same result_*_buffer; the CUB WarpScan compaction below
+  // packs the survivors to the front of the buffer regardless of which mode
+  // produced the invalids.
+  if (kHasSampleFilter || and_mode_active) {
     constexpr INDEX_T index_msb_1_mask = utils::gen_index_msb_1_mask<INDEX_T>::value;
     const INDEX_T invalid_index        = utils::get_max_value<INDEX_T>();
 
-    for (unsigned i = threadIdx.x; i < internal_topk + search_width * graph_degree;
-         i += blockDim.x) {
-      const auto node_id = result_indices_buffer[i] & ~index_msb_1_mask;
-      const auto sample_id = index_map_ptr[node_id + label_offset];
-      if (node_id != (invalid_index & ~index_msb_1_mask) && !sample_filter(query_id, sample_id)) {
-        result_distances_buffer[i] = utils::get_max_value<DISTANCE_T>();
-        result_indices_buffer[i]   = invalid_index;
+    // Single-label SAMPLE_FILTER_T sweep — per-thread per-entry, compile-time
+    // elided when SAMPLE_FILTER_T == none_sample_filter.
+    if constexpr (kHasSampleFilter) {
+      for (unsigned i = threadIdx.x; i < internal_topk + search_width * graph_degree;
+           i += blockDim.x) {
+        const auto node_id = result_indices_buffer[i] & ~index_msb_1_mask;
+        const auto sample_id = index_map_ptr[node_id + label_offset];
+        if (node_id != (invalid_index & ~index_msb_1_mask) && !sample_filter(query_id, sample_id)) {
+          result_distances_buffer[i] = utils::get_max_value<DISTANCE_T>();
+          result_indices_buffer[i]   = invalid_index;
+        }
       }
+      __syncthreads();
     }
 
-    __syncthreads();
+    // Multi-label AND sweep — per-thread per-entry, mirroring upstream's
+    // SAMPLE_FILTER sweep above. Each thread owns one buffer entry and runs
+    // a binary search on the (sorted) per-sample label slice for
+    // `target_label_second`. Loop shape matches upstream exactly so any
+    // future invariant added to upstream applies here too.
+    if (and_mode_active) {
+      for (unsigned i = threadIdx.x; i < internal_topk + search_width * graph_degree;
+           i += blockDim.x) {
+        const auto node_id = result_indices_buffer[i] & ~index_msb_1_mask;
+        if (node_id == (invalid_index & ~index_msb_1_mask)) continue;
+        const auto sample_id = index_map_ptr[node_id + label_offset];
+
+        // Binary search: dataset_labels_ptr[lo..hi) is sorted ascending
+        // (invariant established by `prepare_dataset_label_csr` in
+        // vecflow_common.cuh).
+        int64_t lo = dataset_label_offsets_ptr[sample_id];
+        int64_t hi = dataset_label_offsets_ptr[sample_id + 1];
+        bool found = false;
+        while (lo < hi) {
+          const int64_t mid = lo + ((hi - lo) >> 1);
+          const uint32_t v  = dataset_labels_ptr[mid];
+          if (v == target_label_second) {
+            found = true;
+            break;
+          }
+          if (v < target_label_second) {
+            lo = mid + 1;
+          } else {
+            hi = mid;
+          }
+        }
+        if (!found) {
+          result_distances_buffer[i] = utils::get_max_value<DISTANCE_T>();
+          result_indices_buffer[i]   = invalid_index;
+        }
+      }
+      __syncthreads();
+    }
+
     // Move invalid index items to the end of the buffer without sorting the entire buffer
     using scan_op_t    = cub::WarpScan<unsigned>;
     auto& temp_storage = *reinterpret_cast<typename scan_op_t::TempStorage*>(smem_work_ptr);
+
     constexpr std::uint32_t warp_size = 32;
     if (threadIdx.x < warp_size) {
       std::uint32_t num_found_valid = 0;
@@ -833,15 +1077,18 @@ __device__ void search_core(
           result_indices_buffer[dst_position]   = result_indices_buffer[src_position];
           result_distances_buffer[dst_position] = result_distances_buffer[src_position];
         }
+
         // Calculate the largest valid position within a warp and bcast it for the next iteration
         num_found_valid += new_position;
         for (std::uint32_t offset = (warp_size >> 1); offset > 0; offset >>= 1) {
           const auto v = raft::shfl_xor(num_found_valid, offset);
           if ((threadIdx.x & offset) == 0) { num_found_valid = v; }
         }
+
         // If the enough number of items are found, do early termination
         if (num_found_valid >= top_k) { break; }
       }
+
       if (num_found_valid < top_k) {
         // Fill the remaining buffer with invalid values so that `topk_by_bitonic_sort_and_merge` is
         // usable in the next step
@@ -851,40 +1098,76 @@ __device__ void search_core(
         }
       }
     }
+    
     // If the sufficient number of valid indexes are not in the internal topk, pick up from the
     // candidate list.
     if (top_k > internal_topk || result_indices_buffer[top_k - 1] == invalid_index) {
       __syncthreads();
-      const unsigned multi_warps_1 = ((blockDim.x >= 64) && (MAX_CANDIDATES > 128)) ? 1 : 0;
-      const unsigned multi_warps_2 = ((blockDim.x >= 64) && (MAX_ITOPK > 256)) ? 1 : 0;
-      topk_by_bitonic_sort_and_merge<MAX_ITOPK, MAX_CANDIDATES>(
+      // Fork-only fix vs upstream `search_single_cta_kernel-inl.cuh:1022` which
+      // passes `(iter == 0)` here. After the post-loop CUB compaction above
+      // packs survivors into LINEAR low slots [0..num_found_valid-1], the
+      // buffer is no longer in bitonic-swizzled layout. Passing
+      // `first=(iter==0)`=false makes the merge load itopk via
+      // `device::swizzling(j)` and pick up wrong entries → unsorted output.
+      // `first=true` makes it reload linearly and warp-sort fresh, restoring
+      // the swizzled layout the writeback expects. Upstream is latently
+      // affected too — typical sparse-rejection SAMPLE_FILTER rarely fills
+      // [0..top_k-1] with invalids so the gate seldom fires; AND mode hits
+      // it heavily because per-label intersection density is low.
+      topk_by_bitonic_sort_and_merge<BITONIC_SORT_AND_MERGE_MULTI_WARPS>(
         result_distances_buffer,
         result_indices_buffer,
+        max_itopk,
         internal_topk,
         result_distances_buffer + internal_topk,
         result_indices_buffer + internal_topk,
+        max_candidates,
         search_width * graph_degree,
         topk_ws,
-        (iter == 0),
-        multi_warps_1,
-        multi_warps_2);
+        /*first=*/true);
     }
     __syncthreads();
   }
 
+  // NB: The indices pointer is tagged with its element size.
+  //     Here we select the correct conversion operator at runtime.
+  //     This allows us to avoid multiplying kernel instantiations
+  //     and any costs for extra registers in the kernel signature.
+  const uint32_t index_element_tag = result_indices_ptr & 0x3;
+  result_indices_ptr ^= index_element_tag;
+  auto write_indices =
+    index_element_tag == 3
+      ? [](uintptr_t ptr,
+           uint32_t i,
+           SourceIndexT x) { reinterpret_cast<uint64_t*>(ptr)[i] = static_cast<uint64_t>(x); }
+    : index_element_tag == 2
+      ? [](uintptr_t ptr,
+           uint32_t i,
+           SourceIndexT x) { reinterpret_cast<uint32_t*>(ptr)[i] = static_cast<uint32_t>(x); }
+    : index_element_tag == 1
+      ? [](uintptr_t ptr,
+           uint32_t i,
+           SourceIndexT x) { reinterpret_cast<uint16_t*>(ptr)[i] = static_cast<uint16_t>(x); }
+      : [](uintptr_t ptr, uint32_t i, SourceIndexT x) {
+          reinterpret_cast<uint8_t*>(ptr)[i] = static_cast<uint8_t>(x);
+        };
   for (std::uint32_t i = threadIdx.x; i < top_k; i += blockDim.x) {
     unsigned j  = i + (top_k * query_id);
     unsigned ii = i;
-    if (TOPK_BY_BITONIC_SORT) { ii = device::swizzling(i); }
+    if constexpr (TOPK_BY_BITONIC_SORT) { ii = device::swizzling(i); }
     if (result_distances_ptr != nullptr) { result_distances_ptr[j] = result_distances_buffer[ii]; }
     constexpr INDEX_T index_msb_1_mask = utils::gen_index_msb_1_mask<INDEX_T>::value;
     const INDEX_T invalid_index        = utils::get_max_value<INDEX_T>();
     if (result_indices_buffer[ii] == invalid_index) {
-      result_indices_ptr[j] = invalid_index;
+      write_indices(result_indices_ptr, j, static_cast<SourceIndexT>(invalid_index));
     } else {
-      result_indices_ptr[j] =
-      result_indices_buffer[ii] & ~index_msb_1_mask;  // clear most significant bit
-      result_indices_ptr[j] = index_map_ptr[result_indices_ptr[j]+label_offset];
+      auto internal_index = result_indices_buffer[ii] & ~index_msb_1_mask;
+      // VecFlow per-label remap: convert slice-local id to global id via
+      // index_map_ptr, then through to_source_index for any caller-supplied
+      // SourceIndexT remap (e.g. dataset row reordering).
+      auto remapped     = index_map_ptr[internal_index + label_offset];
+      auto source_index = to_source_index(remapped);
+      write_indices(result_indices_ptr, j, source_index);
     }
   }
   if (threadIdx.x == 0 && num_executed_iterations != nullptr) {
@@ -918,29 +1201,28 @@ __device__ void search_core(
 #endif
 }
 
-template <unsigned MAX_ITOPK,
-          unsigned MAX_CANDIDATES,
-          unsigned TOPK_BY_BITONIC_SORT,
+template <bool TOPK_BY_BITONIC_SORT,
+          bool BITONIC_SORT_AND_MERGE_MULTI_WARPS,
           class DATASET_DESCRIPTOR_T,
+          class SourceIndexT,
           class SAMPLE_FILTER_T>
 RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel(
-  typename DATASET_DESCRIPTOR_T::INDEX_T* const result_indices_ptr,       // [num_queries, top_k]
+  uintptr_t result_indices_ptr,                                           // [num_queries, top_k]
   typename DATASET_DESCRIPTOR_T::DISTANCE_T* const result_distances_ptr,  // [num_queries, top_k]
   const std::uint32_t top_k,
   const DATASET_DESCRIPTOR_T* dataset_desc,
   const typename DATASET_DESCRIPTOR_T::DATA_T* const queries_ptr,  // [num_queries, dataset_dim]
-  const uint32_t* query_labels_ptr,        // [num_queries]
-  const uint32_t* index_map_ptr,           // [graph size]
-  const uint32_t* label_size_ptr,          // [num_labels]
-  const uint32_t* label_offset_ptr,        // [num_labels]
   const typename DATASET_DESCRIPTOR_T::INDEX_T* const knn_graph,   // [dataset_size, graph_degree]
   const std::uint32_t graph_degree,
+  const SourceIndexT* source_indices_ptr,
   const unsigned num_distilation,
   const uint64_t rand_xor_mask,
   const typename DATASET_DESCRIPTOR_T::INDEX_T* seed_ptr,  // [num_queries, num_seeds]
   const uint32_t num_seeds,
   typename DATASET_DESCRIPTOR_T::INDEX_T* const
     visited_hashmap_ptr,  // [num_queries, 1 << hash_bitlen]
+  const std::uint32_t max_candidates,
+  const std::uint32_t max_itopk,
   const std::uint32_t internal_topk,
   const std::uint32_t search_width,
   const std::uint32_t min_iteration,
@@ -949,31 +1231,41 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel(
   const std::uint32_t hash_bitlen,
   const std::uint32_t small_hash_bitlen,
   const std::uint32_t small_hash_reset_interval,
-  SAMPLE_FILTER_T sample_filter)
+  SAMPLE_FILTER_T sample_filter,
+  const typename DATASET_DESCRIPTOR_T::INDEX_T graph_size,
+  // Filtered-search routing (per-label graph slice).
+  const uint32_t* query_labels_ptr,    // [num_queries]
+  const uint32_t* index_map_ptr,       // [graph size]
+  const uint32_t* label_size_ptr,      // [num_labels]
+  const uint32_t* label_offset_ptr,    // [num_labels]
+  // Optional multi-label AND inputs.
+  const uint32_t* const dataset_labels_ptr,
+  const int64_t*  const dataset_label_offsets_ptr,
+  const uint32_t* const query_labels_second_ptr)
 {
   const auto query_id = blockIdx.y;
   const auto label_id = query_labels_ptr[query_id];
   const auto label_size = label_size_ptr[label_id];
   const auto label_offset = label_offset_ptr[label_id];
-  search_core<MAX_ITOPK,
-              MAX_CANDIDATES,
-              TOPK_BY_BITONIC_SORT,
+  search_core<TOPK_BY_BITONIC_SORT,
+              BITONIC_SORT_AND_MERGE_MULTI_WARPS,
               DATASET_DESCRIPTOR_T,
+              SourceIndexT,
               SAMPLE_FILTER_T>(result_indices_ptr,
                                result_distances_ptr,
                                top_k,
                                dataset_desc,
                                queries_ptr,
-                               index_map_ptr,
-                               label_size,
-                               label_offset,
                                knn_graph,
                                graph_degree,
+                               source_indices_ptr,
                                num_distilation,
                                rand_xor_mask,
                                seed_ptr,
                                num_seeds,
                                visited_hashmap_ptr,
+                               max_candidates,
+                               max_itopk,
                                internal_topk,
                                search_width,
                                min_iteration,
@@ -983,7 +1275,14 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel(
                                small_hash_bitlen,
                                small_hash_reset_interval,
                                query_id,
-                               sample_filter);
+                               sample_filter,
+                               graph_size,
+                               index_map_ptr,
+                               label_size,
+                               label_offset,
+                               dataset_labels_ptr,
+                               dataset_label_offsets_ptr,
+                               query_labels_second_ptr);
 }
 
 // To make sure we avoid false sharing on both CPU and GPU, we enforce cache line size to the
@@ -1003,13 +1302,17 @@ struct alignas(kCacheLineBytes) job_desc_t {
   using data_type     = typename DATASET_DESCRIPTOR_T::DATA_T;
   // The algorithm input parameters
   struct value_t {
-    index_type* result_indices_ptr;       // [num_queries, top_k]
+    uintptr_t result_indices_ptr;         // [num_queries, top_k]
     distance_type* result_distances_ptr;  // [num_queries, top_k]
     const data_type* queries_ptr;         // [num_queries, dataset_dim]
     const uint32_t* query_labels_ptr;    // [num_queries]
     const uint32_t* index_map_ptr;       // [graph size]
     const uint32_t* label_size_ptr;     // [num_labels]
     const uint32_t* label_offset_ptr;   // [num_labels]
+    // Optional multi-label AND inputs (nullptr ⇒ AND mode disabled).
+    const uint32_t* dataset_labels_ptr;
+    const int64_t*  dataset_label_offsets_ptr;
+    const uint32_t* query_labels_second_ptr;
     uint32_t top_k;
     uint32_t n_queries;
   };
@@ -1049,10 +1352,10 @@ constexpr auto is_worker_busy(worker_handle_t::handle_t h) -> bool
   return (h != kWaitForWork) && (h != kNoMoreWork);
 }
 
-template <unsigned MAX_ITOPK,
-          unsigned MAX_CANDIDATES,
-          unsigned TOPK_BY_BITONIC_SORT,
+template <bool TOPK_BY_BITONIC_SORT,
+          bool BITONIC_SORT_AND_MERGE_MULTI_WARPS,
           class DATASET_DESCRIPTOR_T,
+          class SourceIndexT,
           class SAMPLE_FILTER_T>
 RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
   const DATASET_DESCRIPTOR_T* dataset_desc,
@@ -1061,12 +1364,15 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
   uint32_t* completion_counters,
   const typename DATASET_DESCRIPTOR_T::INDEX_T* const knn_graph,  // [dataset_size, graph_degree]
   const std::uint32_t graph_degree,
+  const SourceIndexT* source_indices_ptr,
   const unsigned num_distilation,
   const uint64_t rand_xor_mask,
   const typename DATASET_DESCRIPTOR_T::INDEX_T* seed_ptr,  // [num_queries, num_seeds]
   const uint32_t num_seeds,
   typename DATASET_DESCRIPTOR_T::INDEX_T* const
     visited_hashmap_ptr,  // [num_queries, 1 << hash_bitlen]
+  const std::uint32_t max_candidates,
+  const std::uint32_t max_itopk,
   const std::uint32_t internal_topk,
   const std::uint32_t search_width,
   const std::uint32_t min_iteration,
@@ -1075,7 +1381,8 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
   const std::uint32_t hash_bitlen,
   const std::uint32_t small_hash_bitlen,
   const std::uint32_t small_hash_reset_interval,
-  SAMPLE_FILTER_T sample_filter)
+  SAMPLE_FILTER_T sample_filter,
+  const typename DATASET_DESCRIPTOR_T::INDEX_T graph_size)
 {
   using job_desc_type = job_desc_t<DATASET_DESCRIPTOR_T>;
   __shared__ typename job_desc_type::input_t job_descriptor;
@@ -1110,13 +1417,16 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
     if (worker_data.handle == kNoMoreWork) { break; }
 
     // reading phase
-    auto* result_indices_ptr   = job_descriptor.value.result_indices_ptr;
+    auto  result_indices_ptr   = job_descriptor.value.result_indices_ptr;  // uintptr_t
     auto* result_distances_ptr = job_descriptor.value.result_distances_ptr;
     auto* queries_ptr          = job_descriptor.value.queries_ptr;
     auto* query_labels_ptr     = job_descriptor.value.query_labels_ptr;
     auto* index_map_ptr         = job_descriptor.value.index_map_ptr;
     auto* label_size_ptr       = job_descriptor.value.label_size_ptr;
     auto* label_offset_ptr    = job_descriptor.value.label_offset_ptr;
+    auto* dataset_labels_ptr        = job_descriptor.value.dataset_labels_ptr;
+    auto* dataset_label_offsets_ptr = job_descriptor.value.dataset_label_offsets_ptr;
+    auto* query_labels_second_ptr   = job_descriptor.value.query_labels_second_ptr;
     auto top_k                 = job_descriptor.value.top_k;
     auto n_queries             = job_descriptor.value.n_queries;
     auto query_id              = worker_data.value.query_id;
@@ -1125,25 +1435,25 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
     auto label_offset          = label_offset_ptr[label_id];
 
     // work phase
-    search_core<MAX_ITOPK,
-                MAX_CANDIDATES,
-                TOPK_BY_BITONIC_SORT,
+    search_core<TOPK_BY_BITONIC_SORT,
+                BITONIC_SORT_AND_MERGE_MULTI_WARPS,
                 DATASET_DESCRIPTOR_T,
+                SourceIndexT,
                 SAMPLE_FILTER_T>(result_indices_ptr,
                                  result_distances_ptr,
                                  top_k,
                                  dataset_desc,
                                  queries_ptr,
-                                 index_map_ptr,
-                                 label_size,
-                                 label_offset,
                                  knn_graph,
                                  graph_degree,
+                                 source_indices_ptr,
                                  num_distilation,
                                  rand_xor_mask,
                                  seed_ptr,
                                  num_seeds,
                                  visited_hashmap_ptr,
+                                 max_candidates,
+                                 max_itopk,
                                  internal_topk,
                                  search_width,
                                  min_iteration,
@@ -1153,7 +1463,14 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
                                  small_hash_bitlen,
                                  small_hash_reset_interval,
                                  query_id,
-                                 sample_filter);
+                                 sample_filter,
+                                 graph_size,
+                                 index_map_ptr,
+                                 label_size,
+                                 label_offset,
+                                 dataset_labels_ptr,
+                                 dataset_label_offsets_ptr,
+                                 query_labels_second_ptr);
 
     // make sure all writes are visible even for the host
     //     (e.g. when result buffers are in pinned memory)
@@ -1171,100 +1488,71 @@ RAFT_KERNEL __launch_bounds__(1024, 1) search_kernel_p(
 }
 
 template <bool Persistent,
-          unsigned MAX_ITOPK,
-          unsigned MAX_CANDIDATES,
-          unsigned TOPK_BY_BITONIC_SORT,
+          bool TOPK_BY_BITONIC_SORT,
+          bool BITONIC_SORT_AND_MERGE_MULTI_WARPS,
           class DATASET_DESCRIPTOR_T,
+          class SourceIndexT,
           class SAMPLE_FILTER_T>
 auto dispatch_kernel = []() {
+  static_assert(TOPK_BY_BITONIC_SORT || !BITONIC_SORT_AND_MERGE_MULTI_WARPS);
   if constexpr (Persistent) {
-    return search_kernel_p<MAX_ITOPK,
-                           MAX_CANDIDATES,
-                           TOPK_BY_BITONIC_SORT,
+    return search_kernel_p<TOPK_BY_BITONIC_SORT,
+                           BITONIC_SORT_AND_MERGE_MULTI_WARPS,
                            DATASET_DESCRIPTOR_T,
+                           SourceIndexT,
                            SAMPLE_FILTER_T>;
   } else {
-    return search_kernel<MAX_ITOPK,
-                         MAX_CANDIDATES,
-                         TOPK_BY_BITONIC_SORT,
+    return search_kernel<TOPK_BY_BITONIC_SORT,
+                         BITONIC_SORT_AND_MERGE_MULTI_WARPS,
                          DATASET_DESCRIPTOR_T,
+                         SourceIndexT,
                          SAMPLE_FILTER_T>;
   }
 }();
 
-template <bool Persistent, typename DATASET_DESCRIPTOR_T, typename SAMPLE_FILTER_T>
+template <bool Persistent,
+          typename DATASET_DESCRIPTOR_T,
+          typename SourceIndexT,
+          typename SAMPLE_FILTER_T>
 struct search_kernel_config {
-  using kernel_t =
-    decltype(dispatch_kernel<Persistent, 64, 64, 0, DATASET_DESCRIPTOR_T, SAMPLE_FILTER_T>);
-
-  template <unsigned MAX_CANDIDATES, unsigned USE_BITONIC_SORT>
-  static auto choose_search_kernel(unsigned itopk_size) -> kernel_t
-  {
-    if (itopk_size <= 64) {
-      return dispatch_kernel<Persistent,
-                             64,
-                             MAX_CANDIDATES,
-                             USE_BITONIC_SORT,
-                             DATASET_DESCRIPTOR_T,
-                             SAMPLE_FILTER_T>;
-    } else if (itopk_size <= 128) {
-      return dispatch_kernel<Persistent,
-                             128,
-                             MAX_CANDIDATES,
-                             USE_BITONIC_SORT,
-                             DATASET_DESCRIPTOR_T,
-                             SAMPLE_FILTER_T>;
-    } else if (itopk_size <= 256) {
-      return dispatch_kernel<Persistent,
-                             256,
-                             MAX_CANDIDATES,
-                             USE_BITONIC_SORT,
-                             DATASET_DESCRIPTOR_T,
-                             SAMPLE_FILTER_T>;
-    } else if (itopk_size <= 512) {
-      return dispatch_kernel<Persistent,
-                             512,
-                             MAX_CANDIDATES,
-                             USE_BITONIC_SORT,
-                             DATASET_DESCRIPTOR_T,
-                             SAMPLE_FILTER_T>;
-    }
-    THROW("No kernel for parametels itopk_size %u, max_candidates %u", itopk_size, MAX_CANDIDATES);
-  }
+  using kernel_t = decltype(dispatch_kernel<Persistent,
+                                            false,
+                                            false,
+                                            DATASET_DESCRIPTOR_T,
+                                            SourceIndexT,
+                                            SAMPLE_FILTER_T>);
 
   static auto choose_itopk_and_mx_candidates(unsigned itopk_size,
                                              unsigned num_itopk_candidates,
                                              unsigned block_size) -> kernel_t
   {
-    if (num_itopk_candidates <= 64) {
-      // use bitonic sort based topk
-      return choose_search_kernel<64, 1>(itopk_size);
-    } else if (num_itopk_candidates <= 128) {
-      return choose_search_kernel<128, 1>(itopk_size);
-    } else if (num_itopk_candidates <= 256) {
-      return choose_search_kernel<256, 1>(itopk_size);
-    } else {
-      // Radix-based topk is used
-      constexpr unsigned max_candidates = 32;  // to avoid build failure
+    assert(itopk_size <= 512);
+    if (num_itopk_candidates <= 256) {
       if (itopk_size <= 256) {
         return dispatch_kernel<Persistent,
-                               256,
-                               max_candidates,
-                               0,
+                               true,
+                               false,
                                DATASET_DESCRIPTOR_T,
+                               SourceIndexT,
                                SAMPLE_FILTER_T>;
-      } else if (itopk_size <= 512) {
+      } else {
+        assert(block_size >= 64);
         return dispatch_kernel<Persistent,
-                               512,
-                               max_candidates,
-                               0,
+                               true,
+                               true,
                                DATASET_DESCRIPTOR_T,
+                               SourceIndexT,
                                SAMPLE_FILTER_T>;
       }
+    } else {
+      // Radix-based topk is used
+      return dispatch_kernel<Persistent,
+                             false,
+                             false,
+                             DATASET_DESCRIPTOR_T,
+                             SourceIndexT,
+                             SAMPLE_FILTER_T>;
     }
-    THROW("No kernel for parametels itopk_size %u, num_itopk_candidates %u",
-          itopk_size,
-          num_itopk_candidates);
   }
 };
 
@@ -1730,13 +2018,18 @@ struct alignas(kCacheLineBytes) launcher_t {
   }
 };
 
-template <typename DataT, typename IndexT, typename DistanceT, typename SampleFilterT>
+template <typename DataT,
+          typename IndexT,
+          typename DistanceT,
+          typename SourceIndexT,
+          typename SampleFilterT>
 struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_base_t {
   using descriptor_base_type = dataset_descriptor_base_t<DataT, IndexT, DistanceT>;
   using index_type           = IndexT;
   using distance_type        = DistanceT;
   using data_type            = DataT;
-  using kernel_config_type   = search_kernel_config<true, descriptor_base_type, SampleFilterT>;
+  using kernel_config_type =
+    search_kernel_config<true, descriptor_base_type, SourceIndexT, SampleFilterT>;
   using kernel_type          = typename kernel_config_type::kernel_t;
   using job_desc_type        = job_desc_t<descriptor_base_type>;
   kernel_type kernel;
@@ -1843,16 +2136,19 @@ struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_b
     auto* completion_counters_ptr = completion_counters.data();
     auto* job_descriptors_ptr     = job_descriptors.data();
     for (uint32_t i = 0; i < kMaxJobsNum; i++) {
-      auto& jd                = job_descriptors_ptr[i].input.value;
-      jd.result_indices_ptr   = nullptr;
-      jd.result_distances_ptr = nullptr;
-      jd.queries_ptr          = nullptr;
-      jd.query_labels_ptr     = nullptr;
-      jd.index_map_ptr        = nullptr;
-      jd.label_size_ptr       = nullptr;
-      jd.label_offset_ptr    = nullptr;
-      jd.top_k                = 0;
-      jd.n_queries            = 0;
+      auto& jd                       = job_descriptors_ptr[i].input.value;
+      jd.result_indices_ptr          = 0;
+      jd.result_distances_ptr        = nullptr;
+      jd.queries_ptr                 = nullptr;
+      jd.query_labels_ptr            = nullptr;
+      jd.index_map_ptr               = nullptr;
+      jd.label_size_ptr              = nullptr;
+      jd.label_offset_ptr            = nullptr;
+      jd.dataset_labels_ptr          = nullptr;
+      jd.dataset_label_offsets_ptr   = nullptr;
+      jd.query_labels_second_ptr     = nullptr;
+      jd.top_k                       = 0;
+      jd.n_queries                   = 0;
       job_descriptors_ptr[i].completion_flag.store(false);
       job_queue.push(i);
     }
@@ -1922,7 +2218,7 @@ struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_b
     RAFT_LOG_INFO("Destroyed the persistent runner.");
   }
 
-  void launch(index_type* result_indices_ptr,       // [num_queries, top_k]
+  void launch(uintptr_t result_indices_ptr,         // [num_queries, top_k]
               distance_type* result_distances_ptr,  // [num_queries, top_k]
               const data_type* queries_ptr,         // [num_queries, dataset_dim]
               const uint32_t* query_labels_ptr,    // [num_queries]
@@ -1930,7 +2226,11 @@ struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_b
               const uint32_t* label_size_ptr,    // [num_labels]
               const uint32_t* label_offset_ptr,  // [num_labels]
               uint32_t num_queries,
-              uint32_t top_k)
+              uint32_t top_k,
+              // Optional multi-label AND inputs — nullptr disables AND mode.
+              const uint32_t* dataset_labels_ptr        = nullptr,
+              const int64_t*  dataset_label_offsets_ptr = nullptr,
+              const uint32_t* query_labels_second_ptr   = nullptr)
   {
     // submit all queries
     launcher_t launcher{job_queue,
@@ -1946,19 +2246,25 @@ struct alignas(kCacheLineBytes) persistent_runner_t : public persistent_runner_b
                          index_map_ptr,
                          label_size_ptr,
                          label_offset_ptr,
+                         dataset_labels_ptr,
+                         dataset_label_offsets_ptr,
+                         query_labels_second_ptr,
                          top_k,
                          num_queries](uint32_t job_ix) {
-                          auto& jd                = job_descriptors.data()[job_ix].input.value;
-                          auto* cflag             = &job_descriptors.data()[job_ix].completion_flag;
-                          jd.result_indices_ptr   = result_indices_ptr;
-                          jd.result_distances_ptr = result_distances_ptr;
-                          jd.queries_ptr          = queries_ptr;
-                          jd.query_labels_ptr     = query_labels_ptr;
-                          jd.index_map_ptr        = index_map_ptr;
-                          jd.label_size_ptr       = label_size_ptr;
-                          jd.label_offset_ptr     = label_offset_ptr;
-                          jd.top_k                = top_k;
-                          jd.n_queries            = num_queries;
+                          auto& jd                       = job_descriptors.data()[job_ix].input.value;
+                          auto* cflag                    = &job_descriptors.data()[job_ix].completion_flag;
+                          jd.result_indices_ptr          = result_indices_ptr;
+                          jd.result_distances_ptr        = result_distances_ptr;
+                          jd.queries_ptr                 = queries_ptr;
+                          jd.query_labels_ptr            = query_labels_ptr;
+                          jd.index_map_ptr               = index_map_ptr;
+                          jd.label_size_ptr              = label_size_ptr;
+                          jd.label_offset_ptr            = label_offset_ptr;
+                          jd.dataset_labels_ptr          = dataset_labels_ptr;
+                          jd.dataset_label_offsets_ptr   = dataset_label_offsets_ptr;
+                          jd.query_labels_second_ptr     = query_labels_second_ptr;
+                          jd.top_k                       = top_k;
+                          jd.n_queries                   = num_queries;
                           cflag->store(false, cuda::memory_order_relaxed);
                           cuda::atomic_thread_fence(cuda::memory_order_release,
                                                     cuda::thread_scope_system);
@@ -2078,34 +2384,57 @@ auto get_runner(Args... args) -> std::shared_ptr<RunnerT>
   return runner;
 }
 
-template <typename DataT, typename IndexT, typename DistanceT, typename SampleFilterT>
-void select_and_run(const dataset_descriptor_host<DataT, IndexT, DistanceT>& dataset_desc,
-                    raft::device_matrix_view<const IndexT, int64_t, raft::row_major> graph,
-                    IndexT* topk_indices_ptr,       // [num_queries, topk]
-                    DistanceT* topk_distances_ptr,  // [num_queries, topk]
-                    const DataT* queries_ptr,       // [num_queries, dataset_dim]
-                    const uint32_t* query_labels_ptr,        // [num_queries]
-                    const uint32_t* index_map_ptr,           // [graph size]
-                    const uint32_t* label_size_ptr,          // [num_labels]
-                    const uint32_t* label_offset_ptr,        // [num_labels]
-                    uint32_t num_queries,
-                    const IndexT* dev_seed_ptr,         // [num_queries, num_seeds]
-                    uint32_t* num_executed_iterations,  // [num_queries,]
-                    const search_params& ps,
-                    uint32_t topk,
-                    uint32_t num_itopk_candidates,
-                    uint32_t block_size,  //
-                    uint32_t smem_size,
-                    int64_t hash_bitlen,
-                    IndexT* hashmap_ptr,
-                    size_t small_hash_bitlen,
-                    size_t small_hash_reset_interval,
-                    uint32_t num_seeds,
-                    SampleFilterT sample_filter,
-                    cudaStream_t stream)
+template <typename DataT,
+          typename IndexT,
+          typename DistanceT,
+          typename SourceIndexT,
+          typename SampleFilterT>
+void select_and_run(
+  const dataset_descriptor_host<DataT, IndexT, DistanceT>& dataset_desc,
+  raft::device_matrix_view<const IndexT, int64_t, raft::row_major> graph,
+  std::optional<raft::device_vector_view<const SourceIndexT, int64_t>> source_indices,
+  uintptr_t topk_indices_ptr,     // [num_queries, topk]
+  DistanceT* topk_distances_ptr,  // [num_queries, topk]
+  const DataT* queries_ptr,       // [num_queries, dataset_dim]
+  uint32_t num_queries,
+  const IndexT* dev_seed_ptr,         // [num_queries, num_seeds]
+  uint32_t* num_executed_iterations,  // [num_queries,]
+  const search_params& ps,
+  uint32_t topk,
+  uint32_t num_itopk_candidates,
+  uint32_t block_size,  //
+  uint32_t smem_size,
+  int64_t hash_bitlen,
+  IndexT* hashmap_ptr,
+  size_t small_hash_bitlen,
+  size_t small_hash_reset_interval,
+  uint32_t num_seeds,
+  SampleFilterT sample_filter,
+  // Per-label graph-slice routing (filtered search).
+  const uint32_t* query_labels_ptr,    // [num_queries]
+  const uint32_t* index_map_ptr,       // [graph size]
+  const uint32_t* label_size_ptr,      // [num_labels]
+  const uint32_t* label_offset_ptr,    // [num_labels]
+  // Optional multi-label AND inputs — nullptr disables AND mode.
+  const uint32_t* dataset_labels_ptr,
+  const int64_t*  dataset_label_offsets_ptr,
+  const uint32_t* query_labels_second_ptr,
+  cudaStream_t stream)
 {
+  const SourceIndexT* source_indices_ptr =
+    source_indices.has_value() ? source_indices->data_handle() : nullptr;
+  // Derive max_candidates / max_itopk runtime values matching upstream's
+  // single-level dispatcher (replaces the fork's compile-time MAX_CANDIDATES /
+  // MAX_ITOPK templates).
+  const uint32_t max_candidates = (num_itopk_candidates <= 64)    ? 64u
+                                  : (num_itopk_candidates <= 128) ? 128u
+                                                                  : 256u;
+  const uint32_t max_itopk      = (ps.itopk_size <= 64)    ? 64u
+                                  : (ps.itopk_size <= 128) ? 128u
+                                  : (ps.itopk_size <= 256) ? 256u
+                                                           : 512u;
   if (ps.persistent) {
-    using runner_type = persistent_runner_t<DataT, IndexT, DistanceT, SampleFilterT>;
+    using runner_type = persistent_runner_t<DataT, IndexT, DistanceT, SourceIndexT, SampleFilterT>;
 
     get_runner<runner_type>(/*
 Note, we're passing the descriptor by reference here, and this reference is going to be passed to a
@@ -2130,42 +2459,52 @@ control is returned in this thread (in persistent_runner_t constructor), so we'r
                             sample_filter,
                             ps.persistent_lifetime,
                             ps.persistent_device_usage)
-      ->launch(topk_indices_ptr, topk_distances_ptr, queries_ptr, query_labels_ptr, index_map_ptr, label_size_ptr, label_offset_ptr, num_queries, topk);
+      ->launch(topk_indices_ptr, topk_distances_ptr, queries_ptr, query_labels_ptr, index_map_ptr, label_size_ptr, label_offset_ptr, num_queries, topk,
+               dataset_labels_ptr, dataset_label_offsets_ptr, query_labels_second_ptr);
   } else {
     using descriptor_base_type = dataset_descriptor_base_t<DataT, IndexT, DistanceT>;
-    auto kernel                = search_kernel_config<false, descriptor_base_type, SampleFilterT>::
-      choose_itopk_and_mx_candidates(ps.itopk_size, num_itopk_candidates, block_size);
+    auto kernel =
+      search_kernel_config<false, descriptor_base_type, SourceIndexT, SampleFilterT>::
+        choose_itopk_and_mx_candidates(ps.itopk_size, num_itopk_candidates, block_size);
     RAFT_CUDA_TRY(
       cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
     dim3 thread_dims(block_size, 1, 1);
     dim3 block_dims(1, num_queries, 1);
     RAFT_LOG_DEBUG(
       "Launching kernel with %u threads, %u block %u smem", block_size, num_queries, smem_size);
-    kernel<<<block_dims, thread_dims, smem_size, stream>>>(topk_indices_ptr,
-                                                           topk_distances_ptr,
-                                                           topk,
-                                                           dataset_desc.dev_ptr(stream),
-                                                           queries_ptr,
-                                                           query_labels_ptr,
-                                                           index_map_ptr,
-                                                           label_size_ptr,
-                                                           label_offset_ptr,
-                                                           graph.data_handle(),
-                                                           graph.extent(1),
-                                                           ps.num_random_samplings,
-                                                           ps.rand_xor_mask,
-                                                           dev_seed_ptr,
-                                                           num_seeds,
-                                                           hashmap_ptr,
-                                                           ps.itopk_size,
-                                                           ps.search_width,
-                                                           ps.min_iterations,
-                                                           ps.max_iterations,
-                                                           num_executed_iterations,
-                                                           hash_bitlen,
-                                                           small_hash_bitlen,
-                                                           small_hash_reset_interval,
-                                                           sample_filter);
+    kernel<<<block_dims, thread_dims, smem_size, stream>>>(
+      topk_indices_ptr,
+      topk_distances_ptr,
+      topk,
+      dataset_desc.dev_ptr(stream),
+      queries_ptr,
+      graph.data_handle(),
+      graph.extent(1),
+      source_indices_ptr,
+      ps.num_random_samplings,
+      ps.rand_xor_mask,
+      dev_seed_ptr,
+      num_seeds,
+      hashmap_ptr,
+      max_candidates,
+      max_itopk,
+      ps.itopk_size,
+      ps.search_width,
+      ps.min_iterations,
+      ps.max_iterations,
+      num_executed_iterations,
+      hash_bitlen,
+      small_hash_bitlen,
+      small_hash_reset_interval,
+      sample_filter,
+      static_cast<IndexT>(graph.extent(0)),
+      query_labels_ptr,
+      index_map_ptr,
+      label_size_ptr,
+      label_offset_ptr,
+      dataset_labels_ptr,
+      dataset_label_offsets_ptr,
+      query_labels_second_ptr);
     RAFT_CUDA_TRY(cudaPeekAtLastError());
   }
 }

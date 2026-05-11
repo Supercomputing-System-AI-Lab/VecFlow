@@ -23,8 +23,13 @@ class VecFlow:
         graph_fname: str = ...,
         bfs_fname: str = ...,
         force_rebuild: bool = ...,
+        multi_label: bool = ...,
     ) -> None:
-        """Build (or reload) the dual-structured VecFlow index."""
+        """Build (or reload) the dual-structured VecFlow index.
+
+        When ``multi_label=True``, additionally prepares CSR dataset-label
+        buffers so that ``search_multi(...)`` can run AND queries.
+        """
 
     def search(
         self,
@@ -34,6 +39,19 @@ class VecFlow:
         topk: int = 10,
     ) -> Tuple[NDArray[np.uint32], NDArray[np.float32]]:
         """Label-aware top-k search. Returns ``(neighbors, distances)``."""
+
+    def search_multi(
+        self,
+        queries: NDArray[np.float32],
+        query_labels_a: NDArray[np.int32],
+        query_labels_b: NDArray[np.int32],
+        itopk_size: int,
+        topk: int = 10,
+    ) -> Tuple[NDArray[np.uint32], NDArray[np.float32]]:
+        """2-label AND search. Requires ``build(... multi_label=True)``.
+        Order of the two label arrays is irrelevant — the larger-frequency
+        label is picked internally as the primary.
+        """
 
     def generate_ground_truth(
         self,

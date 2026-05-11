@@ -124,7 +124,11 @@ void filtered_search_main_core(
   raft::device_vector_view<uint32_t, int64_t> index_map,
   raft::device_vector_view<uint32_t, int64_t> label_size,
   raft::device_vector_view<uint32_t, int64_t> label_offset,
-  CagraSampleFilterT sample_filter = CagraSampleFilterT())
+  CagraSampleFilterT sample_filter            = CagraSampleFilterT(),
+  // Optional multi-label AND inputs — all nullptr means single-label mode.
+  const uint32_t* dataset_labels_ptr          = nullptr,
+  const int64_t*  dataset_label_offsets_ptr   = nullptr,
+  const uint32_t* query_labels_second_ptr     = nullptr)
 {
   RAFT_LOG_DEBUG("# dataset size = %lu, dim = %lu\n",
                  static_cast<size_t>(graph.extent(0)),
@@ -162,6 +166,10 @@ void filtered_search_main_core(
     const auto* _index_map    = index_map.data_handle();
     const auto* _label_size   = label_size.data_handle();
     const auto* _label_offset = label_offset.data_handle();
+    // Per-batch slice for optional secondary query labels (dataset_* buffers
+    // are shared across all batches so they are passed straight through).
+    const uint32_t* _query_labels_second =
+      (query_labels_second_ptr != nullptr) ? query_labels_second_ptr + qid : nullptr;
     const auto* _seed_ptr =
       plan->num_seeds > 0
         ? reinterpret_cast<const IndexT*>(plan->dev_seed.data()) + (plan->num_seeds * qid)
@@ -181,7 +189,10 @@ void filtered_search_main_core(
             _seed_ptr,
             _num_executed_iterations,
             topk,
-            set_offset(sample_filter, qid));
+            set_offset(sample_filter, qid),
+            dataset_labels_ptr,
+            dataset_label_offsets_ptr,
+            _query_labels_second);
   }
 }
 
@@ -342,7 +353,11 @@ void filtered_search_main(
   raft::device_vector_view<uint32_t, int64_t> index_map,
   raft::device_vector_view<uint32_t, int64_t> label_size,
   raft::device_vector_view<uint32_t, int64_t> label_offset,
-  CagraSampleFilterT sample_filter = CagraSampleFilterT())
+  CagraSampleFilterT sample_filter            = CagraSampleFilterT(),
+  // Optional multi-label AND inputs — all nullptr means single-label mode.
+  const uint32_t* dataset_labels_ptr          = nullptr,
+  const int64_t*  dataset_label_offsets_ptr   = nullptr,
+  const uint32_t* query_labels_second_ptr     = nullptr)
 {
   const auto& graph   = index.graph();
   auto graph_internal = raft::make_device_matrix_view<const InternalIdxT, int64_t, raft::row_major>(
@@ -355,7 +370,8 @@ void filtered_search_main(
       res, params, *strided_dset, index.metric());
     filtered_search_main_core<T, InternalIdxT, DistanceT, CagraSampleFilterT>(
       res, params, desc, graph_internal, queries, neighbors, distances,
-      query_labels, index_map, label_size, label_offset, sample_filter);
+      query_labels, index_map, label_size, label_offset, sample_filter,
+      dataset_labels_ptr, dataset_label_offsets_ptr, query_labels_second_ptr);
   } else if (auto* vpq_dset = dynamic_cast<const vpq_dataset<float, ds_idx_type>*>(&index.data());
              vpq_dset != nullptr) {
     RAFT_FAIL("FP32 VPQ dataset support is coming soon");
@@ -365,7 +381,8 @@ void filtered_search_main(
       res, params, *vpq_dset, index.metric());
     filtered_search_main_core<T, InternalIdxT, DistanceT, CagraSampleFilterT>(
       res, params, desc, graph_internal, queries, neighbors, distances,
-      query_labels, index_map, label_size, label_offset, sample_filter);
+      query_labels, index_map, label_size, label_offset, sample_filter,
+      dataset_labels_ptr, dataset_label_offsets_ptr, query_labels_second_ptr);
   } else if (auto* empty_dset = dynamic_cast<const empty_dataset<ds_idx_type>*>(&index.data());
              empty_dset != nullptr) {
     RAFT_FAIL("Attempted to search without a dataset. Please call index.update_dataset(...) first.");

@@ -41,6 +41,7 @@ PYBIND11_MODULE(vecflow, m) {
              py::arg("graph_fname")          = "",
              py::arg("bfs_fname")            = "",
              py::arg("force_rebuild")        = false,
+             py::arg("multi_label")          = false,
              R"pbdoc(
             Build (or reload from disk) the VecFlow dual index.
 
@@ -62,6 +63,12 @@ PYBIND11_MODULE(vecflow, m) {
                 Cache path for the IVF-BFS index (default: no caching).
             force_rebuild : bool, optional
                 If True, ignore cache files and rebuild from scratch.
+            multi_label : bool, optional
+                If True, also prepare the CSR ``dataset_labels`` /
+                ``dataset_label_offsets`` buffers on the index so that
+                ``search_multi(...)`` can run 2-label AND queries. Adds
+                a one-time pass over ``data_labels`` at build time;
+                zero overhead on the single-label ``search(...)`` path.
         )pbdoc")
 
         .def("search", &PyVecFlow::search,
@@ -89,6 +96,41 @@ PYBIND11_MODULE(vecflow, m) {
             (neighbors, distances) : tuple[numpy.ndarray, numpy.ndarray]
                 ``neighbors`` shape (n_queries, topk) dtype uint32.
                 ``distances`` shape (n_queries, topk) dtype float32.
+        )pbdoc")
+
+        .def("search_multi", &PyVecFlow::search_multi,
+             py::arg("queries"),
+             py::arg("query_labels_a"),
+             py::arg("query_labels_b"),
+             py::arg("itopk_size"),
+             py::arg("topk")                 = 10,
+             R"pbdoc(
+            Run a 2-label AND label-aware top-k search.
+
+            A dataset point is a candidate only if it contains BOTH of the
+            query's labels. The binding auto-selects which of the two labels
+            has the larger specificity (more common label) and uses it as
+            the primary IVF-list selector; the other is checked inline by
+            the kernel. Order of `query_labels_a` vs `query_labels_b` is
+            therefore irrelevant.
+
+            Requires the index to have been built with ``multi_label=True``.
+
+            Parameters
+            ----------
+            queries : numpy.ndarray, shape (n_queries, dim), dtype float32
+            query_labels_a : numpy.ndarray, shape (n_queries,), dtype int32
+                First label per query.
+            query_labels_b : numpy.ndarray, shape (n_queries,), dtype int32
+                Second label per query.
+            itopk_size : int
+                Internal top-k buffer for CAGRA. Higher = better recall, slower.
+            topk : int, optional
+                Neighbors returned per query (default 10).
+
+            Returns
+            -------
+            (neighbors, distances) : tuple[numpy.ndarray, numpy.ndarray]
         )pbdoc")
 
         .def("generate_ground_truth", &PyVecFlow::generate_ground_truth,

@@ -25,6 +25,11 @@ using interleaved_scan_func_t = void(const uint32_t query_smem_elems,
                                      uint32_t* bitset_ptr,
                                      IdxT bitset_len,
                                      IdxT original_nbits,
+                                     // VecFlow multi-label AND inline filter buffers
+                                     // (all-null disables AND mode).
+                                     const uint32_t* dataset_labels_ptr,
+                                     const int64_t*  dataset_label_offsets_ptr,
+                                     const uint32_t* query_labels_second_ptr,
                                      uint32_t* neighbors,
                                      float* distances);
 

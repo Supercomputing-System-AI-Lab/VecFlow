@@ -1740,11 +1740,23 @@ void search(raft::resources const& res,
  * @param[in] queries         [n_queries, dim]
  * @param[out] neighbors      [n_queries, k]
  * @param[out] distances      [n_queries, k]
- * @param[in] query_labels    [n_queries] label per query
+ * @param[in] query_labels    [n_queries] primary label per query (IVF list selector)
  * @param[in] index_map       flat permutation of source row ids; size sum(label_size)
  * @param[in] label_size      [n_labels]
  * @param[in] label_offset    prefix sum of label_size, [n_labels]
  * @param[in] sample_filter   optional sample filter
+ * @param[in] dataset_labels_ptr        OPTIONAL — flat CSR label values for every
+ *                                      dataset point; sorted ascending within each
+ *                                      point's slice. `nullptr` ⇒ multi-label inline
+ *                                      filtering is disabled (single-label mode).
+ * @param[in] dataset_label_offsets_ptr OPTIONAL — CSR offsets of length
+ *                                      (dataset_size + 1); point i's labels live at
+ *                                      dataset_labels_ptr[offsets[i] : offsets[i+1]].
+ *                                      `nullptr` ⇒ single-label mode.
+ * @param[in] query_labels_second_ptr   OPTIONAL — secondary label per query
+ *                                      ([n_queries]). `nullptr` ⇒ single-label
+ *                                      mode; non-null with both dataset_* buffers
+ *                                      enables 2-label AND inline filtering.
  */
 void filtered_search(raft::resources const& res,
                      cuvs::neighbors::cagra::search_params const& params,
@@ -1757,7 +1769,10 @@ void filtered_search(raft::resources const& res,
                      raft::device_vector_view<uint32_t, int64_t> label_size,
                      raft::device_vector_view<uint32_t, int64_t> label_offset,
                      const cuvs::neighbors::filtering::base_filter& sample_filter =
-                       cuvs::neighbors::filtering::none_sample_filter{});
+                       cuvs::neighbors::filtering::none_sample_filter{},
+                     const uint32_t* dataset_labels_ptr        = nullptr,
+                     const int64_t*  dataset_label_offsets_ptr = nullptr,
+                     const uint32_t* query_labels_second_ptr   = nullptr);
 
 void filtered_search(raft::resources const& res,
                      cuvs::neighbors::cagra::search_params const& params,
@@ -1770,7 +1785,10 @@ void filtered_search(raft::resources const& res,
                      raft::device_vector_view<uint32_t, int64_t> label_size,
                      raft::device_vector_view<uint32_t, int64_t> label_offset,
                      const cuvs::neighbors::filtering::base_filter& sample_filter =
-                       cuvs::neighbors::filtering::none_sample_filter{});
+                       cuvs::neighbors::filtering::none_sample_filter{},
+                     const uint32_t* dataset_labels_ptr        = nullptr,
+                     const int64_t*  dataset_label_offsets_ptr = nullptr,
+                     const uint32_t* query_labels_second_ptr   = nullptr);
 
 void filtered_search(raft::resources const& res,
                      cuvs::neighbors::cagra::search_params const& params,
@@ -1783,7 +1801,10 @@ void filtered_search(raft::resources const& res,
                      raft::device_vector_view<uint32_t, int64_t> label_size,
                      raft::device_vector_view<uint32_t, int64_t> label_offset,
                      const cuvs::neighbors::filtering::base_filter& sample_filter =
-                       cuvs::neighbors::filtering::none_sample_filter{});
+                       cuvs::neighbors::filtering::none_sample_filter{},
+                     const uint32_t* dataset_labels_ptr        = nullptr,
+                     const int64_t*  dataset_label_offsets_ptr = nullptr,
+                     const uint32_t* query_labels_second_ptr   = nullptr);
 
 void filtered_search(raft::resources const& res,
                      cuvs::neighbors::cagra::search_params const& params,
@@ -1796,7 +1817,10 @@ void filtered_search(raft::resources const& res,
                      raft::device_vector_view<uint32_t, int64_t> label_size,
                      raft::device_vector_view<uint32_t, int64_t> label_offset,
                      const cuvs::neighbors::filtering::base_filter& sample_filter =
-                       cuvs::neighbors::filtering::none_sample_filter{});
+                       cuvs::neighbors::filtering::none_sample_filter{},
+                     const uint32_t* dataset_labels_ptr        = nullptr,
+                     const int64_t*  dataset_label_offsets_ptr = nullptr,
+                     const uint32_t* query_labels_second_ptr   = nullptr);
 
 /**
  * @}

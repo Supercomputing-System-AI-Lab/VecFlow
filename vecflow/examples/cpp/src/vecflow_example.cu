@@ -3,6 +3,7 @@
 #include <cuvs/neighbors/shared_resources.hpp>
 
 #include <chrono>
+#include <filesystem>
 #include <nlohmann/json.hpp>
 
 #include "common.cuh"
@@ -10,12 +11,25 @@
 using namespace cuvs::neighbors;
 using json = nlohmann::json;
 
+// Resolve the bundled default config (src/config.json) relative to the
+// binary's location, so `./VECFLOW_EXAMPLE` works from any CWD. Falls back
+// to the legacy `../src/config.json` if canonicalization fails (e.g. when
+// argv[0] is a bare name found via PATH).
+static std::string default_config_path(const char* argv0) {
+	try {
+		auto exe_dir = std::filesystem::canonical(argv0).parent_path();
+		return (exe_dir / ".." / "src" / "config.json").lexically_normal().string();
+	} catch (...) {
+		return "../src/config.json";
+	}
+}
+
 int main(int argc, char** argv) {
 	// Check if config file is provided
 	std::string config_file;
 	if (argc < 3 || std::string(argv[1]) != "--config") {
-		printf("No config file provided. Using default configuration file './config/default_config.json'.\n");
-		config_file = "../src/config.json";
+		config_file = default_config_path(argv[0]);
+		printf("No --config provided. Using bundled default: %s\n", config_file.c_str());
 	} else {
 		config_file = argv[2];
 	}
@@ -74,6 +88,17 @@ int main(int argc, char** argv) {
 	} catch (const std::exception& e) {
 		fprintf(stderr, "Error parsing JSON config file: %s\n", e.what());
 		return 1;
+	}
+
+	// If `data_dir` is relative, anchor it to the config file's directory so the
+	// binary works regardless of the caller's CWD.
+	{
+		std::filesystem::path dd(data_dir);
+		if (dd.is_relative()) {
+			auto cfg_dir = std::filesystem::canonical(config_file).parent_path();
+			data_dir = (cfg_dir / dd).lexically_normal().string();
+			if (!data_dir.empty() && data_dir.back() != '/') data_dir += '/';
+		}
 	}
 
 	// Construct full file paths
@@ -154,8 +179,6 @@ int main(int argc, char** argv) {
 
 	// Sweep over itopk_size values, recording throughput + recall for each
 	printf("\n=== Performing Search Sweep ===\n");
-	struct row { int itopk; double qps; double avg_ms; double recall; };
-	std::vector<row> results;
 	for (int itopk_size : itopk_sizes) {
 		// Warmup runs
 		for (int i = 0; i < warmup_runs; i++) {
@@ -187,16 +210,7 @@ int main(int argc, char** argv) {
 		double qps    = num_runs * queries.extent(0) / total_time;
 
 		double recall = compute_recall(res, neighbors.view(), gt_neighbors.view());
-		results.push_back({itopk_size, qps, avg_ms, recall});
 		printf("  itopk=%4d  qps=%10.1f  avg=%6.3f ms  recall=%.4f\n",
 		       itopk_size, qps, avg_ms, recall);
-	}
-
-	// Compact summary table
-	printf("\n=== Summary ===\n");
-	printf("  %10s  %10s  %8s  %7s\n", "itopk_size", "qps", "avg_ms", "recall");
-	printf("  ----------  ----------  --------  -------\n");
-	for (auto const& r : results) {
-		printf("  %10d  %10.1f  %8.3f  %7.4f\n", r.itopk, r.qps, r.avg_ms, r.recall);
 	}
 }

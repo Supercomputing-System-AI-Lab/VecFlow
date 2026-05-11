@@ -149,6 +149,11 @@ void launch_kernel(const index<T, IdxT>& index,
                    cuda::std::optional<uint32_t*> bitset_ptr,
                    cuda::std::optional<IdxT> bitset_len,
                    cuda::std::optional<IdxT> original_nbits,
+                   // VecFlow multi-label AND inline filter buffers
+                   // (all-null disables AND mode).
+                   const uint32_t* dataset_labels_ptr,
+                   const int64_t*  dataset_label_offsets_ptr,
+                   const uint32_t* query_labels_second_ptr,
                    uint32_t* neighbors,
                    float* distances,
                    uint32_t& grid_dim_x,
@@ -236,6 +241,10 @@ void launch_kernel(const index<T, IdxT>& index,
       bitset_ptr.value_or(nullptr),
       bitset_len.value_or(0),
       original_nbits.value_or(0),
+      // VecFlow multi-label AND inline filter buffers
+      dataset_labels_ptr,
+      dataset_label_offsets_ptr,
+      query_labels_second_ptr,
       neighbors,
       distances);
     queries += grid_dim_y * index.dim();
@@ -434,7 +443,13 @@ void ivfflat_interleaved_scan(const index<T, IdxT>& index,
                               float* distances,
                               uint32_t& grid_dim_x,
                               rmm::cuda_stream_view stream,
-                              const std::optional<std::string>& metric_udf)
+                              const std::optional<std::string>& metric_udf,
+                              // VecFlow multi-label AND inline filter buffers
+                              // (all-null disables AND mode; default keeps the
+                              // upstream cuVS behavior for callers that don't opt in).
+                              const uint32_t* dataset_labels_ptr        = nullptr,
+                              const int64_t*  dataset_label_offsets_ptr = nullptr,
+                              const uint32_t* query_labels_second_ptr   = nullptr)
 {
   const uint32_t n_probes_clamped = std::min(n_probes, index.n_lists());
   const int capacity              = raft::bound_by_power_of_two(k);
@@ -467,6 +482,9 @@ void ivfflat_interleaved_scan(const index<T, IdxT>& index,
         bitset_ptr,
         bitset_len,
         original_nbits,
+        dataset_labels_ptr,
+        dataset_label_offsets_ptr,
+        query_labels_second_ptr,
         neighbors,
         distances,
         grid_dim_x,

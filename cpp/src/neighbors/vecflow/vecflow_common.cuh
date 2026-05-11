@@ -71,7 +71,7 @@ struct QueryInfo {
 template <typename T>
 RAFT_KERNEL classify_queries_kernel(const T* queries,
                                         uint32_t* query_labels,
-                                        uint32_t* cat_freq,
+                                        uint32_t* label_freq,
                                         uint32_t* temp_cagra_map,
                                         uint32_t* temp_bfs_map,
                                         T* temp_cagra_queries,
@@ -88,7 +88,7 @@ RAFT_KERNEL classify_queries_kernel(const T* queries,
   if (tid >= n_queries) return;
 
   uint32_t label = query_labels[tid];
-  uint32_t freq = cat_freq[label];
+  uint32_t freq = label_freq[label];
   bool is_cagra = freq > specificity_threshold;
 
   int pos;
@@ -115,7 +115,7 @@ template <typename T>
 inline auto classify_queries(raft::resources const& res,
                              raft::device_matrix_view<const T, int64_t> queries,
                              raft::device_vector_view<uint32_t, int64_t> query_labels,
-                             raft::device_vector_view<uint32_t, int64_t> cat_freq,
+                             raft::device_vector_view<uint32_t, int64_t> label_freq,
                              int specificity_threshold) -> QueryInfo<T> {
 
   int n_queries = queries.extent(0);
@@ -142,7 +142,7 @@ inline auto classify_queries(raft::resources const& res,
   classify_queries_kernel<<<grid_size, block_size, 0, stream>>>(
     queries.data_handle(),
     query_labels.data_handle(),
-    cat_freq.data_handle(),
+    label_freq.data_handle(),
     temp_cagra_map.data(),
     temp_bfs_map.data(),
     temp_cagra_queries.data(),
@@ -281,6 +281,96 @@ inline void merge_search_results(raft::resources const& res,
       topk);
     RAFT_CUDA_TRY(cudaPeekAtLastError());
   }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Multi-label AND helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the CSR-flat dataset-label arrays used by `search_multi_labels`.
+ * Each per-point label slice is sorted ascending — the kernel-side inline
+ * AND check (binary search) relies on this invariant.
+ *
+ * @param[in]  data_label_vecs        Host list of per-point label lists.
+ * @param[out] out_dataset_labels     Flat device array of all labels.
+ * @param[out] out_dataset_offsets    CSR offsets, length n_points+1.
+ */
+inline void prepare_dataset_label_csr(
+  shared_resources::configured_raft_resources&          res,
+  const std::vector<std::vector<int>>&                  data_label_vecs,
+  raft::device_vector<uint32_t, int64_t>&               out_dataset_labels,
+  raft::device_vector<int64_t,  int64_t>&               out_dataset_label_offsets)
+{
+  const int64_t n_points = static_cast<int64_t>(data_label_vecs.size());
+
+  // Build sorted host slices + CSR offsets.
+  std::vector<int64_t> h_offsets(n_points + 1, 0);
+  for (int64_t i = 0; i < n_points; i++) {
+    h_offsets[i + 1] = h_offsets[i] + static_cast<int64_t>(data_label_vecs[i].size());
+  }
+  const int64_t nnz = h_offsets[n_points];
+
+  std::vector<uint32_t> h_labels(nnz);
+  for (int64_t i = 0; i < n_points; i++) {
+    auto sorted = data_label_vecs[i];
+    std::sort(sorted.begin(), sorted.end());
+    for (size_t j = 0; j < sorted.size(); j++) {
+      h_labels[h_offsets[i] + static_cast<int64_t>(j)] = static_cast<uint32_t>(sorted[j]);
+    }
+  }
+
+  // Materialize on device.
+  out_dataset_labels        = raft::make_device_vector<uint32_t, int64_t>(res, nnz);
+  out_dataset_label_offsets = raft::make_device_vector<int64_t,  int64_t>(res, n_points + 1);
+  auto stream               = raft::resource::get_cuda_stream(res);
+
+  raft::update_device(out_dataset_labels.data_handle(),        h_labels.data(),  nnz,             stream);
+  raft::update_device(out_dataset_label_offsets.data_handle(), h_offsets.data(), n_points + 1,    stream);
+}
+
+/**
+ * For each query, pick the rarer label (smaller `label_freq`) as the primary
+ * and the other as the secondary. Searching the smaller candidate set first
+ * and post-filtering by the more common label minimizes wasted work and
+ * keeps itopk from being dominated by hits that only match the common label.
+ *
+ * Out arrays must be pre-sized to n_queries.
+ */
+RAFT_KERNEL pick_primary_by_label_freq_kernel(const uint32_t* __restrict__ labels_a,
+                                            const uint32_t* __restrict__ labels_b,
+                                            const uint32_t* __restrict__ label_freq,
+                                            uint32_t*       __restrict__ primary_out,
+                                            uint32_t*       __restrict__ secondary_out,
+                                            int                          n_queries)
+{
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n_queries) return;
+  const uint32_t a = labels_a[i];
+  const uint32_t b = labels_b[i];
+  // Tie-break: when equal frequencies, pick `a` as primary deterministically.
+  if (label_freq[a] <= label_freq[b]) {
+    primary_out[i]   = a;
+    secondary_out[i] = b;
+  } else {
+    primary_out[i]   = b;
+    secondary_out[i] = a;
+  }
+}
+
+/**
+ * Gather one element per output position from `src`, indexed by `map`.
+ * Used to permute the secondary-label array along the same partition order
+ * that `classify_queries` produced for primary labels.
+ */
+RAFT_KERNEL gather_by_map_kernel(const uint32_t* __restrict__ src,
+                                 const uint32_t* __restrict__ map,
+                                 uint32_t*       __restrict__ dst,
+                                 int                          n)
+{
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  dst[i] = src[map[i]];
 }
 
 }  // namespace cuvs::neighbors::vecflow
