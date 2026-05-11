@@ -25,7 +25,14 @@ name: release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:           # manual trigger from the Actions tab
+    # TEMPORARY (smoke-test phase): auto-run on every push to v0.1.0 so we
+    # don't need the "Run workflow" UI button (which is only visible when
+    # the workflow file exists on the default branch). REMOVE this
+    # `branches:` block before cutting the real v0.1.0 tag — otherwise
+    # every commit on the branch will burn ~1–2h of CI time.
+    branches: ['v0.1.0']
+  workflow_dispatch:           # manual trigger from the Actions tab (only
+                               # shown once this workflow lands on `main`)
 
 env:
   RAPIDS_CUDA_VERSION: "12.9"
@@ -201,15 +208,18 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Install pixi
-        run: |
-          curl -fsSL https://pixi.sh/install.sh | sh
-          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
-
-      # Pin to v1 — v2 deprecated the `anaconda upload --user <org>`
-      # syntax used below. Revisit after we've validated v2 flag names.
+      # Pin to v1 — v2 deprecated the `anaconda upload --user <org>` syntax
+      # used below. Revisit after we've validated v2 flag names.
+      #
+      # Use pip directly (not pixi global install): pixi v0.30+ doesn't
+      # auto-expose binaries whose name differs from the package name, so
+      # `pixi global install anaconda-client` would NOT put `anaconda` on
+      # PATH. pip3 --user puts the binary in ~/.local/bin which we add to
+      # GITHUB_PATH for subsequent steps.
       - name: Install anaconda-client (v1)
-        run: pixi global install 'anaconda-client<2'
+        run: |
+          python3 -m pip install --break-system-packages --user 'anaconda-client<2'
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
