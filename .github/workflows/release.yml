@@ -88,6 +88,21 @@ jobs:
       - name: Install rattler-build
         run: pixi global install rattler-build
 
+      # sccache: caches C++/CUDA compile outputs in GitHub Actions cache so
+      # subsequent builds (same arch) skip recompilation of unchanged TUs.
+      # First push to v0.1.0 populates the cache; later pushes reuse it.
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+        with:
+          version: "v0.8.2"
+
+      - name: Configure sccache env
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true"             >> $GITHUB_ENV
+          echo "CMAKE_C_COMPILER_LAUNCHER=sccache"    >> $GITHUB_ENV
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"  >> $GITHUB_ENV
+          echo "CMAKE_CUDA_COMPILER_LAUNCHER=sccache" >> $GITHUB_ENV
+
       - name: Build libcuvs-vecflow
         run: |
           rattler-build build \
@@ -98,6 +113,10 @@ jobs:
             --channel rapidsai \
             --channel conda-forge \
             --skip-existing all
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
 
       # Upload the whole conda-bld tree (subdir + repodata) so build-py can
       # consume it as a local channel via file:// in the next stage.
