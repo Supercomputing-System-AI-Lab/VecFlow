@@ -280,67 +280,102 @@ void generate_ground_truth(raft::resources const& res,
 		return;
 	}
 
-	// Part 1: Generate bitmap for filtered search
 	int64_t n_queries = query_label_vecs.size();
 	int64_t n_database = dataset.extent(0);
-	int64_t words_per_row = (n_database + 31) / 32;  // Round up to nearest 32 bits
 
-	auto bitmap = raft::make_device_matrix<uint32_t, int64_t>(res, n_queries, words_per_row);
+	// Per-label brute-force: for each label, gather its database vectors and
+	// the queries assigned to it, run an unfiltered brute_force::search on that
+	// subset, then map local indices back to global ones.  This avoids the
+	// bitmap_filter path in brute_force::search which crashes on this cuVS build.
 
-	// Clear the bitmap
-	RAFT_CUDA_TRY(cudaMemsetAsync(
-			bitmap.data_handle(),
-			0,
-			bitmap.size() * sizeof(uint32_t),
-			raft::resource::get_cuda_stream(res)));
+	int64_t n_labels = (int64_t)label_data_vecs.size();
 
-	// For each query, set bits for data points that match its label
-	for (int64_t q_idx = 0; q_idx < n_queries; q_idx++) {
-		const auto& query_labels = query_label_vecs[q_idx];
-		for (int label : query_labels) {
-			const auto& matching_data_points = label_data_vecs[label];
-			std::vector<uint32_t> h_matching_bits(bitmap.extent(1), 0);
-			for (int data_idx : matching_data_points) {
-				if (data_idx >= n_database) continue;
-				int word_idx = data_idx / 32;
-				int bit_pos = data_idx % 32;
-				h_matching_bits[word_idx] |= (1u << bit_pos);
-			}
-			raft::update_device(bitmap.data_handle() + q_idx * bitmap.extent(1),
-													h_matching_bits.data(),
-													bitmap.extent(1),
-													raft::resource::get_cuda_stream(res));
+	// Copy full dataset and queries to host once for gathering subsets.
+	auto h_dataset = raft::make_host_matrix<float, int64_t>(n_database, queries.extent(1));
+	auto h_queries = raft::make_host_matrix<float, int64_t>(n_queries, queries.extent(1));
+	raft::copy(h_dataset.data_handle(), dataset.data_handle(),
+	           n_database * queries.extent(1), raft::resource::get_cuda_stream(res));
+	raft::copy(h_queries.data_handle(), queries.data_handle(),
+	           n_queries * queries.extent(1), raft::resource::get_cuda_stream(res));
+	raft::resource::sync_stream(res);
+
+	int64_t dim = queries.extent(1);
+	int64_t k   = gt_neighbors.extent(1);
+
+	// Build label -> [query_idx] mapping.
+	std::vector<std::vector<int>> label_query_vecs(n_labels);
+	for (int64_t q = 0; q < n_queries; q++) {
+		for (int label : query_label_vecs[q]) {
+			if (label >= 0 && label < n_labels) label_query_vecs[label].push_back((int)q);
 		}
 	}
 
-	// Build brute force index
+	// Host result matrix (initialised to UINT32_MAX = "no result").
+	auto h_gt = raft::make_host_matrix<uint32_t, int64_t>(n_queries, k);
+	std::fill(h_gt.data_handle(), h_gt.data_handle() + n_queries * k, UINT32_MAX);
+
 	cuvs::neighbors::brute_force::index_params bf_index_params;
 	bf_index_params.metric = cuvs::distance::DistanceType::L2Expanded;
-	auto bf_index = cuvs::neighbors::brute_force::build(res, bf_index_params, dataset);
-
-	// Create bitmap view and filter for brute force search
-	auto bitmap_view = raft::core::bitmap_view<uint32_t, int64_t>(
-			bitmap.data_handle(), n_queries, n_database);
-	auto filter = cuvs::neighbors::filtering::bitmap_filter<uint32_t, int64_t>(bitmap_view);
-
-	// Temporary storage for int64_t neighbors
-	auto temp_neighbors = raft::make_device_matrix<int64_t, int64_t>(res, queries.extent(0), gt_neighbors.extent(1));
-
-	// Perform filtered exact search
-	auto gt_distances = raft::make_device_matrix<float, int64_t>(res, queries.extent(0), gt_neighbors.extent(1));
 	cuvs::neighbors::brute_force::search_params bf_search_params;
-	cuvs::neighbors::brute_force::search(res,
-																			 bf_search_params,
-																			 bf_index,
-																			 queries,
-																			 temp_neighbors.view(),
-																			 gt_distances.view(),
-																			 filter);
-	raft::resource::sync_stream(res);
 
-	convert_neighbors_to_uint32(res, temp_neighbors.data_handle(), gt_neighbors.data_handle(), n_queries, gt_neighbors.extent(1));
+	for (int64_t label = 0; label < n_labels; label++) {
+		const auto& db_indices = label_data_vecs[label];
+		const auto& q_indices  = label_query_vecs[label];
+		if (db_indices.empty() || q_indices.empty()) continue;
+
+		int64_t n_db = (int64_t)db_indices.size();
+		int64_t n_q  = (int64_t)q_indices.size();
+		int64_t actual_k = std::min(k, n_db);
+
+		// Gather label-subset of dataset onto device.
+		auto h_sub_db = raft::make_host_matrix<float, int64_t>(n_db, dim);
+		for (int64_t i = 0; i < n_db; i++)
+			std::copy_n(h_dataset.data_handle() + db_indices[i] * dim, dim,
+			            h_sub_db.data_handle() + i * dim);
+		auto d_sub_db = raft::make_device_matrix<float, int64_t>(res, n_db, dim);
+		raft::copy(d_sub_db.data_handle(), h_sub_db.data_handle(),
+		           n_db * dim, raft::resource::get_cuda_stream(res));
+
+		// Gather label-subset of queries onto device.
+		auto h_sub_q = raft::make_host_matrix<float, int64_t>(n_q, dim);
+		for (int64_t i = 0; i < n_q; i++)
+			std::copy_n(h_queries.data_handle() + q_indices[i] * dim, dim,
+			            h_sub_q.data_handle() + i * dim);
+		auto d_sub_q = raft::make_device_matrix<float, int64_t>(res, n_q, dim);
+		raft::copy(d_sub_q.data_handle(), h_sub_q.data_handle(),
+		           n_q * dim, raft::resource::get_cuda_stream(res));
+
+		// Unfiltered brute-force search on the subset.
+		auto d_nbrs = raft::make_device_matrix<int64_t, int64_t>(res, n_q, actual_k);
+		auto d_dist = raft::make_device_matrix<float,   int64_t>(res, n_q, actual_k);
+		auto bf_idx = cuvs::neighbors::brute_force::build(
+		    res, bf_index_params, raft::make_const_mdspan(d_sub_db.view()));
+		cuvs::neighbors::brute_force::search(
+		    res, bf_search_params, bf_idx,
+		    raft::make_const_mdspan(d_sub_q.view()),
+		    d_nbrs.view(), d_dist.view());
+		raft::resource::sync_stream(res);
+
+		// Map local indices back to global indices.
+		auto h_nbrs = raft::make_host_matrix<int64_t, int64_t>(n_q, actual_k);
+		raft::copy(h_nbrs.data_handle(), d_nbrs.data_handle(),
+		           n_q * actual_k, raft::resource::get_cuda_stream(res));
+		raft::resource::sync_stream(res);
+
+		for (int64_t i = 0; i < n_q; i++) {
+			for (int64_t j = 0; j < actual_k; j++) {
+				int64_t local = h_nbrs(i, j);
+				if (local >= 0 && local < n_db)
+					h_gt(q_indices[i], j) = (uint32_t)db_indices[local];
+			}
+		}
+	}
+
+	raft::copy(gt_neighbors.data_handle(), h_gt.data_handle(),
+	           n_queries * k, raft::resource::get_cuda_stream(res));
+	raft::resource::sync_stream(res);
 	save_matrix_to_ibin(res, gt_fname, gt_neighbors);
-	std::cout << "Generated filtered ground truth for " << n_queries << " queries" << std::endl;
+	printf("Generated ground truth for %ld queries\n", n_queries);
 }
 
 /**
