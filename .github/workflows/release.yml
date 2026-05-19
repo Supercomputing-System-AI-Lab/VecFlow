@@ -25,14 +25,9 @@ name: release
 on:
   push:
     tags: ['v*']
-    # TEMPORARY (smoke-test phase): auto-run on every push to v0.1.0 so we
-    # don't need the "Run workflow" UI button (which is only visible when
-    # the workflow file exists on the default branch). REMOVE this
-    # `branches:` block before cutting the real v0.1.0 tag — otherwise
-    # every commit on the branch will burn ~1–2h of CI time.
-    branches: ['v0.1.0']
   workflow_dispatch:           # manual trigger from the Actions tab (only
-                               # shown once this workflow lands on `main`)
+                               # shown once this workflow lands on `main`).
+                               # Builds only — publish step is gated on tag push.
 
 env:
   RAPIDS_CUDA_VERSION: "12.9"
@@ -213,6 +208,8 @@ jobs:
   publish:
     name: publish to anaconda.org/VecFlow
     needs: [build-cpp, build-py]
+    # Only tag pushes (`refs/tags/v*`) publish. Branch pushes and manual
+    # `workflow_dispatch` runs build the packages but skip this job.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
 
