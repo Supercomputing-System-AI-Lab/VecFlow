@@ -214,15 +214,16 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Install pixi
-        run: |
-          curl -fsSL https://pixi.sh/install.sh | sh
-          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
-
-      # Pin to v1 — v2 deprecated the `anaconda upload --user <org>`
-      # syntax used below. Revisit after we've validated v2 flag names.
+      # Pin to v1 — v2 deprecated the `anaconda upload --user <org>` syntax
+      # used below. Revisit after we've validated v2 flag names.
+      #
+      # Use pipx (not `pixi global install`): pixi v0.30+ doesn't auto-expose
+      # binaries whose name differs from the package name, so
+      # `pixi global install anaconda-client` would NOT put `anaconda` on PATH.
+      # pipx is pre-installed on ubuntu-24.04 runners and drops the binary
+      # into ~/.local/bin which is already on PATH.
       - name: Install anaconda-client (v1)
-        run: pixi global install 'anaconda-client<2'
+        run: pipx install 'anaconda-client<2'
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
