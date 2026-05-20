@@ -217,13 +217,20 @@ jobs:
       # Pin to v1 — v2 deprecated the `anaconda upload --user <org>` syntax
       # used below. Revisit after we've validated v2 flag names.
       #
-      # Use pipx (not `pixi global install`): pixi v0.30+ doesn't auto-expose
-      # binaries whose name differs from the package name, so
-      # `pixi global install anaconda-client` would NOT put `anaconda` on PATH.
-      # pipx is pre-installed on ubuntu-24.04 runners and drops the binary
-      # into ~/.local/bin which is already on PATH.
+      # Use `pip install --user` (not pixi, not pipx):
+      #   * pixi v0.30+ doesn't auto-expose binaries whose name differs from
+      #     the package name — `anaconda` would not land on PATH.
+      #   * pipx on the GH ubuntu-24.04 image is configured with
+      #     PIPX_BIN_DIR=/opt/pipx_bin (root-owned), so a non-root install
+      #     does not reliably surface the binary either.
+      # pip --user drops the binary in ~/.local/bin; we explicitly append
+      # that to $GITHUB_PATH so subsequent steps can find `anaconda`.
+      # --break-system-packages is required because ubuntu-24.04's system
+      # Python is PEP 668-marked.
       - name: Install anaconda-client (v1)
-        run: pipx install 'anaconda-client<2'
+        run: |
+          python3 -m pip install --break-system-packages --user 'anaconda-client<2'
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
