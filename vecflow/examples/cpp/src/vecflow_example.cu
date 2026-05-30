@@ -11,16 +11,16 @@
 using namespace cuvs::neighbors;
 using json = nlohmann::json;
 
-// Resolve the bundled default config (src/config.json) relative to the
+// Resolve the bundled default config (config/config.json) relative to the
 // binary's location, so `./VECFLOW_EXAMPLE` works from any CWD. Falls back
-// to the legacy `../src/config.json` if canonicalization fails (e.g. when
-// argv[0] is a bare name found via PATH).
+// to `../config/config.json` if canonicalization fails (e.g. when argv[0]
+// is a bare name found via PATH).
 static std::string default_config_path(const char* argv0) {
 	try {
 		auto exe_dir = std::filesystem::canonical(argv0).parent_path();
-		return (exe_dir / ".." / "src" / "config.json").lexically_normal().string();
+		return (exe_dir / ".." / "config" / "config.json").lexically_normal().string();
 	} catch (...) {
-		return "../src/config.json";
+		return "../config/config.json";
 	}
 }
 

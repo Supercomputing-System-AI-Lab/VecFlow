@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# PEP 517 packaging for the vecflow-chamfer Python wrapper. Drives the CMake
+# build via scikit-build-core: `pip install .` produces a wheel containing
+# the pybind11 module compiled against the conda-installed libvecflow-chamfer
+# (which in turn pulls libcuvs-vecflow). Mirrors vecflow/pyproject.toml.
+
+[build-system]
+requires = [
+    "scikit-build-core[pyproject]>=0.10",
+    "pybind11>=2.11",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "vecflow-chamfer"
+description = "vecflow-chamfer: multi-vector retrieval on GPUs with a memory hierarchy"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "SSAIL lab, University of Illinois at Urbana-Champaign" },
+]
+dynamic = ["version"]
+dependencies = [
+    "numpy>=1.19",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: C++",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Homepage   = "https://github.com/Supercomputing-System-AI-Lab/VecFlow"
+Repository = "https://github.com/Supercomputing-System-AI-Lab/VecFlow"
+
+# ── scikit-build-core driver ──────────────────────────────────────────────
+# Hands off to the top-level CMakeLists.txt, which does
+# pybind11_add_module(_vecflow_chamfer ...) and find_package(vecflow_chamfer).
+[tool.scikit-build]
+cmake.version  = ">=3.30"
+ninja.version  = ">=1.10"
+build-dir      = "build/{wheel_tag}"
+wheel.packages = ["vecflow_chamfer"]
+
+# Single-file source of truth: vecflow/VERSION (shared with the vecflow
+# package; both move together on the same release tag).
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input    = "../vecflow/VERSION"
+regex    = '^(?P<value>\d+\.\d+\.\d+)$'
+
+# find_package(vecflow_chamfer) resolves against the conda env's
+# $CONDA_PREFIX/lib/cmake/vecflow_chamfer/ when libvecflow-chamfer-cuXX is
+# installed in the host env (conda recipe path). For a local source build
+# pass -Dvecflow_chamfer_ROOT=vecflow-chamfer/cpp/build to hit the BUILD
+# export rapids_export writes there.
+[tool.scikit-build.cmake.define]
+CMAKE_VERBOSE_MAKEFILE = "ON"

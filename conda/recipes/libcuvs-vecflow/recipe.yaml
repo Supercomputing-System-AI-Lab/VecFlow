@@ -12,7 +12,7 @@ schema_version: 1
 context:
   # version comes from env (set by scripts/local_release_test.sh and CI from
   # vecflow/VERSION). Fallback default keeps the recipe usable standalone.
-  version: ${{ env.get("VECFLOW_VERSION", default="0.1.0") }}
+  version: ${{ env.get("VECFLOW_VERSION", default="0.2.0") }}
   cuda_version: ${{ env.get("RAPIDS_CUDA_VERSION", default="12.9") }}
   cuda_major: ${{ (cuda_version | split("."))[0] }}
   # cuVS major.minor we're forked off (drives libraft/librmm pin).

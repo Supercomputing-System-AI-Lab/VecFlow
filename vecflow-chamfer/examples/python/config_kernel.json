@@ -1,0 +1,16 @@
+{
+  "data": {
+    "num_docs": 10000,
+    "tokens_per_doc": 128,
+    "dim": 128,
+    "tokens_per_query": 32
+  },
+  "benchmark": {
+    "warmup_runs": 10,
+    "num_runs": 200
+  },
+  "output": {
+    "sample_compare_count": 10,
+    "verify_against_cpu": true
+  }
+}

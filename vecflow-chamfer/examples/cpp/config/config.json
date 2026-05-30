@@ -1,0 +1,54 @@
+{
+  "dataset": {
+    "dir": "../../datasets/lifestyle",
+    "prefix": "lifestyle.test"
+  },
+
+  "index": {
+    "n_anchors":     500000,
+    "graph_degree":  32,
+    "build_itopk":   256,
+    "n_iter":        5,
+    "force_rebuild": false,
+
+    "vpq": {
+      "_doc": [
+        "Build a PQ side-encoding of each doc token's residual against its anchor.",
+        "The MaxIVF anchors play the VQ role, so no separate VQ codebook is trained.",
+        "Disable with enabled=false; pq_bits and pq_dim then have no effect."
+      ],
+      "enabled": false,
+      "pq_bits": 8,
+      "pq_dim":  32
+    }
+  },
+
+  "search": {
+    "search_itopk":       [64, 64, 64, 64],
+    "search_topk":        [8, 16, 24, 32],
+    "final_topk":         100,
+    "n_queries":          -1,
+    "refine_rate_anchor": 10.0,
+
+    "vpq": {
+      "_doc": [
+        "Optional VPQ rerank, slotted between anchor proxy and full-chamfer:",
+        "  anchor-proxy -> top-K(refine_rate_anchor * final_topk)",
+        "  -> VPQ       -> top-K(refine_rate         * final_topk)",
+        "  -> full-chamfer -> top-K(final_topk).",
+        "Requires index.vpq.enabled=true and an index loaded with VPQ codes."
+      ],
+      "enabled":     false,
+      "refine_rate": 1.5
+    }
+  },
+
+  "output": {
+    "max_queries_to_print": 0,
+    "show_performance":     true,
+    "evaluate_recall":      true,
+    "recall_k":             0,
+    "gt_doc_batch_size":    100000,
+    "cache_gt":             true
+  }
+}

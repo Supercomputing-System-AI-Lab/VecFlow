@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Python wrapper recipe. Depends on libcuvs-vecflow at runtime; the build
-# is small (just the pybind11 binding + small .cu glue from vecflow/) since
-# it links against the precompiled libcuvs.so.
+# Python wrapper recipe for vecflow-chamfer. Depends on libvecflow-chamfer
+# (which transitively pulls libcuvs-vecflow). The build is small — just the
+# pybind11 binding linked against the precompiled libvecflow_chamfer.so.
 #
-# Output: vecflow-cu{12,13}, version from vecflow/VERSION.
+# Output: vecflow-chamfer-cu{12,13}, version from vecflow/VERSION (shared
+# with the vecflow Python package — same release tag bumps both).
 
 schema_version: 1
 
@@ -15,7 +16,7 @@ context:
   py_version: ${{ env.get("RAPIDS_PY_VERSION", default="3.12") }}
 
 package:
-  name: vecflow-cu${{ cuda_major }}
+  name: vecflow-chamfer-cu${{ cuda_major }}
   version: ${{ version }}
 
 source:
@@ -29,7 +30,7 @@ build:
   script:
     content: |
       set -euo pipefail
-      cd vecflow
+      cd vecflow-chamfer
       pip install . --no-deps --no-build-isolation -vv
 
 requirements:
@@ -48,12 +49,14 @@ requirements:
     - pybind11 >=2.11
     - cuda-version =${{ cuda_version }}
     - cuda-cudart-dev
-    - libcuvs-vecflow-cu${{ cuda_major }} ==${{ version }}
+    # Strict version pin — vecflow-chamfer Python links against the matching
+    # libvecflow-chamfer SO. libcuvs-vecflow is pulled transitively.
+    - libvecflow-chamfer-cu${{ cuda_major }} ==${{ version }}
   run:
     - python =${{ py_version }}
     - numpy >=1.19
     - ${{ pin_compatible("cuda-version", upper_bound="x", lower_bound="x") }}
-    - libcuvs-vecflow-cu${{ cuda_major }} ==${{ version }}
+    - libvecflow-chamfer-cu${{ cuda_major }} ==${{ version }}
   ignore_run_exports:
     by_name:
       - cuda-cudart
@@ -62,8 +65,14 @@ requirements:
 about:
   homepage: https://github.com/Supercomputing-System-AI-Lab/VecFlow
   license: Apache-2.0
-  summary: VecFlow Python bindings (label-aware ANN search on GPU)
+  summary: vecflow-chamfer Python bindings (multi-vector retrieval on GPU)
   description: |
-    Python bindings for VecFlow's filtered ANN search. Uses pybind11 to
-    expose cuvs::neighbors::vecflow::{build,search} plus a ground-truth
-    helper. Depends on libcuvs-vecflow for the underlying CUDA library.
+    Python bindings for vecflow-chamfer. Exposes Dataset / QuerySet / Index
+    classes and free build/search/serialize/deserialize functions over the
+    C++ MaxIVF + chamfer-rerank pipeline. Depends on libvecflow-chamfer for
+    the underlying CUDA library.
+
+    Install:
+
+        mamba install -c VecFlow -c rapidsai-nightly -c rapidsai \
+                      -c conda-forge vecflow-chamfer-cu12

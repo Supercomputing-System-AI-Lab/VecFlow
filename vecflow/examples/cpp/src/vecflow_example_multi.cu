@@ -24,9 +24,9 @@ using json = nlohmann::json;
 static std::string default_config_path(const char* argv0) {
 	try {
 		auto dir = std::filesystem::canonical(argv0).parent_path();
-		return (dir / ".." / "src" / "config_multi.json").lexically_normal().string();
+		return (dir / ".." / "config" / "config_multi.json").lexically_normal().string();
 	} catch (...) {
-		return "../src/config_multi.json";
+		return "../config/config_multi.json";
 	}
 }
 

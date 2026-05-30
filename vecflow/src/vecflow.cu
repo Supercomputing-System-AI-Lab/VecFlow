@@ -318,147 +318,139 @@ PyVecFlow::generate_ground_truth(py::array_t<float> dataset,
                                  std::vector<std::vector<int>> query_label_vecs,
                                  int topk,
                                  std::string gt_fname) {
-  
-  // Get dataset and query dimensions
+
   auto dataset_info = dataset.request();
   auto queries_info = queries.request();
-  int64_t n_database = dataset_info.shape[0];
   int64_t n_queries = queries_info.shape[0];
-  int64_t dim = dataset_info.shape[1];
-  
-  // Check if dimensions match
+  int64_t dim       = dataset_info.shape[1];
+  int64_t k         = topk;
+
   if (dim != queries_info.shape[1]) {
     throw std::runtime_error("Dataset and query dimensions do not match");
   }
-  
-  // Initialize device matrices for results
-  auto gt_neighbors = raft::make_device_matrix<uint32_t, int64_t>(res, n_queries, topk);
 
-  // Check if ground truth file already exists, load if it does
+  auto gt_neighbors = raft::make_device_matrix<uint32_t, int64_t>(res, n_queries, k);
+
   std::ifstream file(gt_fname);
   if (file.good()) {
     load_matrix_from_ibin(res, gt_fname, gt_neighbors.view());
-    std::vector<py::ssize_t> shape = {n_queries, topk};
+    std::vector<py::ssize_t> shape = {n_queries, k};
     py::array_t<uint32_t> neighbors_array(shape);
     auto neigh_buf = neighbors_array.request();
     raft::copy(static_cast<uint32_t*>(neigh_buf.ptr),
                gt_neighbors.data_handle(),
-               n_queries * topk,
+               n_queries * k,
                raft::resource::get_cuda_stream(res));
+    raft::resource::sync_stream(res);
     return neighbors_array;
   }
 
-  // Read label data
-  int max_label = 0;
-  for (size_t i = 0; i < data_label_vecs.size(); i++) {
-    for (size_t j = 0; j < data_label_vecs[i].size(); j++) {
-      max_label = std::max(max_label, data_label_vecs[i][j]);
-    }
-  }
-  int num_labels = max_label + 1;
-  std::vector<std::vector<int>> label_data_vecs(num_labels);
-  for (size_t i = 0; i < data_label_vecs.size(); i++) {
-    for (size_t j = 0; j < data_label_vecs[i].size(); j++) {
-      label_data_vecs[data_label_vecs[i][j]].push_back(i);
-    }
-  }
-
-  // Verify query labels match expected count
-  if (query_label_vecs.size() != n_queries) {
+  if (static_cast<int64_t>(query_label_vecs.size()) != n_queries) {
     throw std::runtime_error("Number of query labels doesn't match number of queries");
   }
 
-  // Copy queries to device
-  auto d_queries = raft::make_device_matrix<float, int64_t>(res, n_queries, dim);
-  raft::copy(d_queries.data_handle(),
-             static_cast<float*>(queries_info.ptr),
-             n_queries * dim,
-             raft::resource::get_cuda_stream(res));
-  
-  // Copy dataset to device (only once)
-  auto d_dataset = raft::make_device_matrix<float, int64_t>(res, n_database, dim);
-  raft::copy(d_dataset.data_handle(),
-             static_cast<float*>(dataset_info.ptr),
-             n_database * dim,
-             raft::resource::get_cuda_stream(res));
-  raft::resource::sync_stream(res);
-  
-  // Generate bitmap for filtered search
-  int64_t words_per_row = (n_database + 31) / 32;  // Round up to nearest 32 bits
-  auto bitmap = raft::make_device_matrix<uint32_t, int64_t>(res, n_queries, words_per_row);
-  
-  // Clear the bitmap
-  RAFT_CUDA_TRY(cudaMemsetAsync(
-      bitmap.data_handle(),
-      0,
-      bitmap.size() * sizeof(uint32_t),
-      raft::resource::get_cuda_stream(res)));
-  
-  // For each query, set bits for data points that match its label
-  for (int64_t q_idx = 0; q_idx < n_queries; q_idx++) {
-    const auto& query_labels = query_label_vecs[q_idx];
-    for (int label : query_labels) {
-      // Skip invalid labels
-      if (label < 0 || label >= static_cast<int>(label_data_vecs.size())) {
-        continue;
-      }
-      
-      const auto& matching_data_points = label_data_vecs[label];
-      std::vector<uint32_t> h_matching_bits(words_per_row, 0);
-      
-      for (int data_idx : matching_data_points) {
-        if (data_idx >= n_database) continue;
-        int word_idx = data_idx / 32;
-        int bit_pos = data_idx % 32;
-        h_matching_bits[word_idx] |= (1u << bit_pos);
-      }
-      
-      raft::update_device(bitmap.data_handle() + q_idx * words_per_row,
-                          h_matching_bits.data(),
-                          words_per_row,
-                          raft::resource::get_cuda_stream(res));
+  // Per-label brute-force: for each label, gather its database vectors and
+  // the queries assigned to it, run an unfiltered brute_force::search on that
+  // subset, then map local indices back to global ones.  Mirrors the C++
+  // example in examples/cpp/src/common.cuh and avoids the bitmap_filter path
+  // in brute_force::search which crashes on this cuVS build with
+  // "Unsupported sample filter type".
+
+  int max_label = 0;
+  for (const auto& v : data_label_vecs)
+    for (int l : v) max_label = std::max(max_label, l);
+  for (const auto& v : query_label_vecs)
+    for (int l : v) max_label = std::max(max_label, l);
+  int64_t n_labels = static_cast<int64_t>(max_label) + 1;
+
+  std::vector<std::vector<int>> label_data_vecs(n_labels);
+  for (size_t i = 0; i < data_label_vecs.size(); i++) {
+    for (int l : data_label_vecs[i]) {
+      if (l >= 0 && l < n_labels) label_data_vecs[l].push_back(static_cast<int>(i));
     }
   }
-  
-  // Build brute force index
-  auto bf_index = cuvs::neighbors::brute_force::build(res,
-                                                      d_dataset.view(),
-                                                      cuvs::distance::DistanceType::L2Expanded);
-  
-  // Create bitmap view and filter for brute force search
-  auto bitmap_view = raft::core::bitmap_view<const uint32_t, int64_t>(
-      bitmap.data_handle(), n_queries, n_database);
-  auto filter = cuvs::neighbors::filtering::bitmap_filter<const uint32_t, int64_t>(bitmap_view);
-  
-  // Temporary storage for int64_t neighbors
-  auto temp_neighbors = raft::make_device_matrix<int64_t, int64_t>(res, n_queries, topk);
-  auto gt_distances = raft::make_device_matrix<float, int64_t>(res, n_queries, topk);
-  
-  // Perform filtered exact search
-  cuvs::neighbors::brute_force::search(res,
-                                       bf_index,
-                                       d_queries.view(),
-                                       temp_neighbors.view(),
-                                       gt_distances.view(),
-                                       filter);
-  raft::resource::sync_stream(res);
 
-  // Convert int64_t neighbors to uint32_t
-  convert_neighbors_to_uint32(res, temp_neighbors.data_handle(), gt_neighbors.data_handle(), n_queries, topk);
-  
-  // Save ground truth to file
+  std::vector<std::vector<int>> label_query_vecs(n_labels);
+  for (int64_t q = 0; q < n_queries; q++) {
+    for (int l : query_label_vecs[q]) {
+      if (l >= 0 && l < n_labels) label_query_vecs[l].push_back(static_cast<int>(q));
+    }
+  }
+
+  const float* h_dataset = static_cast<const float*>(dataset_info.ptr);
+  const float* h_queries = static_cast<const float*>(queries_info.ptr);
+
+  // Host result matrix (initialised to UINT32_MAX = "no result").
+  auto h_gt = raft::make_host_matrix<uint32_t, int64_t>(n_queries, k);
+  std::fill(h_gt.data_handle(), h_gt.data_handle() + n_queries * k, UINT32_MAX);
+
+  cuvs::neighbors::brute_force::index_params bf_index_params;
+  bf_index_params.metric = cuvs::distance::DistanceType::L2Expanded;
+  cuvs::neighbors::brute_force::search_params bf_search_params;
+
+  for (int64_t label = 0; label < n_labels; label++) {
+    const auto& db_indices = label_data_vecs[label];
+    const auto& q_indices  = label_query_vecs[label];
+    if (db_indices.empty() || q_indices.empty()) continue;
+
+    int64_t n_db = static_cast<int64_t>(db_indices.size());
+    int64_t n_q  = static_cast<int64_t>(q_indices.size());
+    int64_t actual_k = std::min(k, n_db);
+
+    auto h_sub_db = raft::make_host_matrix<float, int64_t>(n_db, dim);
+    for (int64_t i = 0; i < n_db; i++)
+      std::copy_n(h_dataset + static_cast<int64_t>(db_indices[i]) * dim, dim,
+                  h_sub_db.data_handle() + i * dim);
+    auto d_sub_db = raft::make_device_matrix<float, int64_t>(res, n_db, dim);
+    raft::copy(d_sub_db.data_handle(), h_sub_db.data_handle(),
+               n_db * dim, raft::resource::get_cuda_stream(res));
+
+    auto h_sub_q = raft::make_host_matrix<float, int64_t>(n_q, dim);
+    for (int64_t i = 0; i < n_q; i++)
+      std::copy_n(h_queries + static_cast<int64_t>(q_indices[i]) * dim, dim,
+                  h_sub_q.data_handle() + i * dim);
+    auto d_sub_q = raft::make_device_matrix<float, int64_t>(res, n_q, dim);
+    raft::copy(d_sub_q.data_handle(), h_sub_q.data_handle(),
+               n_q * dim, raft::resource::get_cuda_stream(res));
+
+    auto d_nbrs = raft::make_device_matrix<int64_t, int64_t>(res, n_q, actual_k);
+    auto d_dist = raft::make_device_matrix<float,   int64_t>(res, n_q, actual_k);
+    auto bf_idx = cuvs::neighbors::brute_force::build(
+        res, bf_index_params, raft::make_const_mdspan(d_sub_db.view()));
+    cuvs::neighbors::brute_force::search(
+        res, bf_search_params, bf_idx,
+        raft::make_const_mdspan(d_sub_q.view()),
+        d_nbrs.view(), d_dist.view());
+    raft::resource::sync_stream(res);
+
+    auto h_nbrs = raft::make_host_matrix<int64_t, int64_t>(n_q, actual_k);
+    raft::copy(h_nbrs.data_handle(), d_nbrs.data_handle(),
+               n_q * actual_k, raft::resource::get_cuda_stream(res));
+    raft::resource::sync_stream(res);
+
+    for (int64_t i = 0; i < n_q; i++) {
+      for (int64_t j = 0; j < actual_k; j++) {
+        int64_t local = h_nbrs(i, j);
+        if (local >= 0 && local < n_db)
+          h_gt(q_indices[i], j) = static_cast<uint32_t>(db_indices[local]);
+      }
+    }
+  }
+
+  raft::copy(gt_neighbors.data_handle(), h_gt.data_handle(),
+             n_queries * k, raft::resource::get_cuda_stream(res));
+  raft::resource::sync_stream(res);
   save_matrix_to_ibin(res, gt_fname, gt_neighbors.view());
-  
-  // Copy results from device to host
-  std::vector<py::ssize_t> shape = {n_queries, topk};
+
+  std::vector<py::ssize_t> shape = {n_queries, k};
   py::array_t<uint32_t> neighbors_array(shape);
   auto neigh_buf = neighbors_array.request();
-  
   raft::copy(static_cast<uint32_t*>(neigh_buf.ptr),
              gt_neighbors.data_handle(),
-             n_queries * topk,
+             n_queries * k,
              raft::resource::get_cuda_stream(res));
-  std::cout << "Generated filtered ground truth for " << n_queries << " queries" << std::endl;
-  
+  raft::resource::sync_stream(res);
+  std::cout << "Generated ground truth for " << n_queries << " queries" << std::endl;
+
   return neighbors_array;
 }

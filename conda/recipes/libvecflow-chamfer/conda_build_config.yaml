@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build-tooling pins for libvecflow-chamfer. Same toolchain as the
+# libcuvs-vecflow recipe so the two packages link cleanly against each
+# other (chamfer links cuvs::cuvs and pulls libcuvs-vecflow as a host dep).
+c_compiler_version:
+  - 14
+cxx_compiler_version:
+  - 14
+cuda_compiler:
+  - cuda-nvcc
+c_stdlib:
+  - sysroot
+c_stdlib_version:
+  - "2.28"
+cmake_version:
+  - ">=3.30.4"

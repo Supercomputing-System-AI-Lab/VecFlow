@@ -1,38 +1,47 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Tag-driven release pipeline. Builds libcuvs-vecflow (C++) and vecflow
-# (Python) conda packages on linux-64 + linux-aarch64 and uploads to
-# anaconda.org/VecFlow.
+# Tag-driven release pipeline. Builds the full VecFlow v0.2.0 package set on
+# linux-64 + linux-aarch64 and uploads to anaconda.org/VecFlow:
+#
+#   libcuvs-vecflow-cu12      C++  cuVS + VecFlow filtered-ANN extensions
+#   vecflow-cu12              Py   filtered-ANN wrapper
+#   libvecflow-chamfer-cu12   C++  multi-vector / chamfer-rerank pipeline
+#   vecflow-chamfer-cu12      Py   multi-vector wrapper
 #
 # To cut a release:
 #   1. bump vecflow/VERSION
 #   2. git tag v0.X.Y && git push --tags
 # Job results land at https://anaconda.org/VecFlow/
 #
-# Layout: three jobs.
-#   build-cpp  — matrix: arch only (2 jobs). Builds libcuvs-vecflow.
-#   build-py   — matrix: arch × python (8 jobs). needs build-cpp; downloads
-#                the C++ .conda + repodata as a local channel and builds the
-#                Python wrapper against it.
-#   publish    — needs both. Downloads every artifact and uploads .conda files
-#                to anaconda.org/VecFlow on tag push.
+# Layout: five jobs forming two dependency chains that share the same
+# libcuvs-vecflow C++ build.
+#   build-cpp          — matrix: arch (2 jobs). Builds libcuvs-vecflow.
+#   build-py           — matrix: arch × python (8 jobs). needs build-cpp;
+#                        downloads the C++ .conda + repodata as a local channel
+#                        and builds the vecflow Python wrapper against it.
+#   build-chamfer-cpp  — matrix: arch (2 jobs). needs build-cpp; downloads the
+#                        libcuvs-vecflow channel and builds libvecflow-chamfer
+#                        against it (chamfer links cuvs::cuvs). Re-uploads the
+#                        combined channel (both C++ pkgs) for the next stage.
+#   build-chamfer-py   — matrix: arch × python (8 jobs). needs
+#                        build-chamfer-cpp; builds the vecflow-chamfer Python
+#                        wrapper against the combined C++ channel.
+#   publish            — needs all four build jobs. Downloads every artifact,
+#                        de-dups by filename, and uploads the .conda files to
+#                        anaconda.org/VecFlow on tag push.
 #
-# Why split: the C++ package is Python-independent. Bundling it into the
-# Python matrix would rebuild it 4× per arch.
+# Why split cpp from py: the C++ packages are Python-independent. Bundling
+# them into the Python matrix would rebuild them 4× per arch. Why split
+# vecflow from chamfer: chamfer's C++ lib depends on libcuvs-vecflow, so it
+# must build after it — but the vecflow Python wrapper does not, so the two
+# chains fan out in parallel off the shared build-cpp.
 
 name: release
 
 on:
   push:
     tags: ['v*']
-    # TEMPORARY (smoke-test phase): auto-run on every push to v0.1.0 so we
-    # don't need the "Run workflow" UI button (which is only visible when
-    # the workflow file exists on the default branch). REMOVE this
-    # `branches:` block before cutting the real v0.1.0 tag — otherwise
-    # every commit on the branch will burn ~1–2h of CI time.
-    branches: ['v0.1.0']
-  workflow_dispatch:           # manual trigger from the Actions tab (only
-                               # shown once this workflow lands on `main`)
+  workflow_dispatch:           # manual trigger from the Actions tab
 
 env:
   RAPIDS_CUDA_VERSION: "12.9"
@@ -99,8 +108,8 @@ jobs:
             --channel conda-forge \
             --skip-existing all
 
-      # Upload the whole conda-bld tree (subdir + repodata) so build-py can
-      # consume it as a local channel via file:// in the next stage.
+      # Upload the whole conda-bld tree (subdir + repodata) so the Python and
+      # chamfer stages can consume it as a local channel via file:// next.
       - name: Upload C++ channel as artifact
         uses: actions/upload-artifact@v4
         with:
@@ -109,7 +118,7 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── 2. Build Python package per (arch, python) ────────────────────────────
+  # ── 2. Build vecflow Python package per (arch, python) ────────────────────
   build-py:
     name: py / ${{ matrix.subdir }} / py${{ matrix.python }}
     needs: build-cpp
@@ -123,17 +132,7 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
 
-    # NOTE: hardcoded CUDA version. Two reasons it has to be a literal:
-    #   1. GitHub Actions doesn't evaluate ${{ env.* }} in `container.image`.
-    #   2. NVIDIA only publishes patch-level tags on Docker Hub (e.g.
-    #      `12.9.1-devel-ubuntu24.04`). The shorthand `12.9-devel-ubuntu24.04`
-    #      does NOT exist as a manifest and pulls fail with `manifest unknown`.
-    # The workflow-level `env: RAPIDS_CUDA_VERSION` ("12.9", major.minor) is
-    # used for conda dep pinning inside recipes (cuda-version is keyed by
-    # major.minor on conda), so the two values intentionally diverge: the
-    # image gets the patch-level tag, the env var stays major.minor.
-    # Bump both together when CUDA moves; verify a candidate tag with
-    # `docker manifest inspect nvidia/cuda:<tag>` before committing.
+    # See build-cpp for why the CUDA image tag is a hardcoded literal.
     container:
       image: nvidia/cuda:12.9.1-devel-ubuntu24.04
 
@@ -200,10 +199,164 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # ── 3. Publish to anaconda.org/VecFlow on tag push ────────────────────────
+  # ── 3. Build libvecflow-chamfer (C++) once per arch ───────────────────────
+  build-chamfer-cpp:
+    name: chamfer-cpp / ${{ matrix.subdir }}
+    needs: build-cpp
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     subdir: linux-64,      arch: x86_64  }
+          - { runner: ubuntu-24.04-arm, subdir: linux-aarch64, arch: aarch64 }
+
+    runs-on: ${{ matrix.runner }}
+
+    # See build-cpp for why the CUDA image tag is a hardcoded literal.
+    container:
+      image: nvidia/cuda:12.9.1-devel-ubuntu24.04
+
+    steps:
+      - name: Install system tools
+        run: |
+          apt-get update -y
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates git xz-utils
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read VERSION files into env
+        run: |
+          echo "VECFLOW_VERSION=$(tr -d '[:space:]' < vecflow/VERSION)" >> $GITHUB_ENV
+          echo "CUVS_MINOR_VERSION=$(tr -d '[:space:]' < VERSION | awk -F. '{print $1"."$2}')" >> $GITHUB_ENV
+
+      - name: Install pixi (provides rattler-build)
+        run: |
+          curl -fsSL https://pixi.sh/install.sh | sh
+          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
+
+      - name: Install rattler-build
+        run: pixi global install rattler-build
+
+      # libvecflow-chamfer's host dep is `libcuvs-vecflow-cu12 =${version}`, so
+      # the freshly-built C++ channel must be present and listed FIRST.
+      - name: Download libcuvs-vecflow channel for this arch
+        uses: actions/download-artifact@v4
+        with:
+          name: cpp-${{ matrix.subdir }}
+          path: ./conda-bld/
+
+      - name: Build libvecflow-chamfer
+        run: |
+          rattler-build build \
+            --recipe conda/recipes/libvecflow-chamfer/recipe.yaml \
+            --target-platform ${{ matrix.subdir }} \
+            --output-dir ./conda-bld \
+            --channel "file://$(pwd)/conda-bld" \
+            --channel rapidsai-nightly \
+            --channel rapidsai \
+            --channel conda-forge \
+            --skip-existing all
+
+      # Upload the combined channel (libcuvs-vecflow + libvecflow-chamfer +
+      # repodata) so build-chamfer-py can resolve both C++ packages from a
+      # single file:// channel. The publish job de-dups the libcuvs-vecflow
+      # .conda that also appears in the cpp-* artifact.
+      - name: Upload chamfer C++ channel as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chamfer-cpp-${{ matrix.subdir }}
+          path: ./conda-bld/
+          retention-days: 7
+          if-no-files-found: error
+
+  # ── 4. Build vecflow-chamfer Python package per (arch, python) ────────────
+  build-chamfer-py:
+    name: chamfer-py / ${{ matrix.subdir }} / py${{ matrix.python }}
+    needs: build-chamfer-cpp
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04,     subdir: linux-64,      arch: x86_64  }
+          - { runner: ubuntu-24.04-arm, subdir: linux-aarch64, arch: aarch64 }
+        python: ["3.11", "3.12", "3.13", "3.14"]
+
+    runs-on: ${{ matrix.runner }}
+
+    # See build-cpp for why the CUDA image tag is a hardcoded literal.
+    container:
+      image: nvidia/cuda:12.9.1-devel-ubuntu24.04
+
+    env:
+      RAPIDS_PY_VERSION: ${{ matrix.python }}
+
+    steps:
+      - name: Install system tools
+        run: |
+          apt-get update -y
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates git xz-utils
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read VERSION files into env
+        run: |
+          echo "VECFLOW_VERSION=$(tr -d '[:space:]' < vecflow/VERSION)" >> $GITHUB_ENV
+          echo "CUVS_MINOR_VERSION=$(tr -d '[:space:]' < VERSION | awk -F. '{print $1"."$2}')" >> $GITHUB_ENV
+
+      - name: Install pixi (provides rattler-build)
+        run: |
+          curl -fsSL https://pixi.sh/install.sh | sh
+          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
+
+      - name: Install rattler-build
+        run: pixi global install rattler-build
+
+      # The combined channel carries BOTH C++ packages: vecflow-chamfer's host
+      # dep is libvecflow-chamfer, which transitively pulls libcuvs-vecflow.
+      - name: Download chamfer C++ channel for this arch
+        uses: actions/download-artifact@v4
+        with:
+          name: chamfer-cpp-${{ matrix.subdir }}
+          path: ./conda-bld/
+
+      - name: Write rattler variant config
+        run: |
+          cat > /tmp/vecflow-chamfer-variant.yaml <<EOF
+          python:
+            - "${{ matrix.python }}"
+          EOF
+
+      - name: Build vecflow-chamfer (Python)
+        run: |
+          rattler-build build \
+            --recipe conda/recipes/vecflow-chamfer/recipe.yaml \
+            --target-platform ${{ matrix.subdir }} \
+            --output-dir ./conda-bld \
+            --channel "file://$(pwd)/conda-bld" \
+            --channel rapidsai-nightly \
+            --channel rapidsai \
+            --channel conda-forge \
+            --variant-config /tmp/vecflow-chamfer-variant.yaml \
+            --skip-existing all
+
+      - name: Upload Python .conda artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chamfer-py-${{ matrix.subdir }}-py${{ matrix.python }}
+          path: ./conda-bld/${{ matrix.subdir }}/vecflow-chamfer-cu*.conda
+          retention-days: 7
+          if-no-files-found: error
+
+  # ── 5. Publish to anaconda.org/VecFlow on tag push ────────────────────────
   publish:
     name: publish to anaconda.org/VecFlow
-    needs: [build-cpp, build-py]
+    needs: [build-cpp, build-py, build-chamfer-cpp, build-chamfer-py]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
 
@@ -227,16 +380,25 @@ jobs:
         env:
           ANACONDA_TOKEN: ${{ secrets.ANACONDA_TOKEN }}
         run: |
-          # Collect every .conda from every artifact dir. The C++ artifacts
-          # contain the full conda-bld tree (with repodata.json etc), so
-          # filter to .conda files only — anaconda upload doesn't want the
-          # repodata.
-          mapfile -t pkgs < <(find ./artifacts -type f -name '*.conda')
+          # Collect every .conda from every artifact dir, then de-dup by
+          # filename. The C++ artifacts (cpp-* and chamfer-cpp-*) both carry
+          # the full conda-bld tree, so libcuvs-vecflow's .conda appears in
+          # more than one artifact dir — upload it once.
+          mapfile -t all < <(find ./artifacts -type f -name '*.conda' | sort)
+          declare -A seen
+          pkgs=()
+          for f in "${all[@]}"; do
+            b=$(basename "$f")
+            if [ -z "${seen[$b]:-}" ]; then
+              seen[$b]=1
+              pkgs+=("$f")
+            fi
+          done
           if [ ${#pkgs[@]} -eq 0 ]; then
             echo "ERROR: no .conda artifacts found to upload" >&2
             exit 1
           fi
-          echo "Uploading ${#pkgs[@]} package(s):"
+          echo "Uploading ${#pkgs[@]} unique package(s):"
           printf '  %s\n' "${pkgs[@]}"
           anaconda -t "$ANACONDA_TOKEN" upload \
                    --user VecFlow \

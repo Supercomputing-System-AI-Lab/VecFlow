@@ -1,10 +1,8 @@
-# VecFlow — Install, API Usage, Build From Source, Examples
+# VecFlow — API Usage, Examples
 
-This subdirectory holds the standalone Python wrapper and end-to-end
-examples on the SIFT1M dataset. It also documents the C++-only install
-path, API usage (Python + C++), building from source, and bundled
-SIFT1M examples. The [top-level README](../README.md) covers the
-high-level pitch and Python install in one shot.
+Python wrapper, C++ API surface, and end-to-end examples on the SIFT1M
+dataset. The shared conda env setup is documented in the [top-level
+README](../README.md).
 
 ## What's here
 
@@ -18,22 +16,65 @@ high-level pitch and Python install in one shot.
 | `pyproject.toml` | scikit-build-core build config |
 | `CMakeLists.txt` | drives the pybind11 module compilation |
 | `examples/` | end-to-end Python + C++ examples on SIFT1M |
+| `examples/download_dataset.sh` | fetches the bundled SIFT1M dataset from Google Drive |
 
 C++ source for the algorithm itself lives in:
 - `../cpp/src/neighbors/vecflow/` (composite IVF-CAGRA + IVF-BFS)
 - `../cpp/src/neighbors/filtered_bfs/` (label-gated IVF-Flat)
 - `../cpp/src/neighbors/detail/cagra/filtered_search_single_cta*` (CAGRA fork)
 
-## Install (C++ users, no Python)
+## Install
 
-Precompiled conda packages on the [VecFlow Anaconda channel](https://anaconda.org/VecFlow) for Linux x86_64 and Linux aarch64, CUDA 12. Compute capabilities baked in: `sm_80`, `sm_90`, `sm_90a` (A100, H100, GH200).
+Two paths — pick one. Either way you end up with `libcuvs.so` (with the
+VecFlow patches) in `$CONDA_PREFIX/lib/` and, optionally, the `vecflow`
+Python module installed into the active env.
+
+### Option A — Precompiled (recommended)
+
+Conda packages on the [VecFlow Anaconda channel](https://anaconda.org/VecFlow)
+for Linux x86_64 / aarch64, CUDA 12. Compute capabilities baked in: `sm_80`,
+`sm_90`, `sm_90a` (A100, H100, GH200).
 
 ```bash
-mamba install -c VecFlow -c rapidsai-nightly -c rapidsai -c conda-forge \
-              libcuvs-vecflow-cu12
+# Python wrapper (transitively pulls libcuvs-vecflow-cu12)
+mamba create -n vecflow -y \
+       -c VecFlow -c rapidsai-nightly -c rapidsai -c conda-forge \
+       vecflow-cu12 python=3.12      # or 3.11 / 3.13 / 3.14
+mamba activate vecflow
+
+# Or C++ only
+mamba create -n vecflow -y \
+       -c VecFlow -c rapidsai-nightly -c rapidsai -c conda-forge \
+       libcuvs-vecflow-cu12
+mamba activate vecflow
 ```
 
-Then in your CMake project:
+### Option B — Build from source
+
+After creating the conda env (see [top-level README](../README.md)):
+
+```bash
+# 1. From the repo root — installs the patched libcuvs.so into
+#    $CONDA_PREFIX/lib/. Only needed once per env (or after pulling
+#    cuVS changes).
+cd $REPO_ROOT
+./build.sh libcuvs --install
+
+# 2. From this directory — builds the Python wrapper and/or the
+#    C++ example binary against the libcuvs.so installed in step 1.
+cd $REPO_ROOT/vecflow
+./build.sh python                 # Python wrapper
+./build.sh examples               # C++ example binary
+./build.sh examples python        # both in one go
+```
+
+`./build.sh -h` lists the rest of the flags (`-j`, `-v`, `clean`).
+
+### Coexistence with upstream cuVS
+
+`libcuvs-vecflow-cu12` and rapidsai's stock `libcuvs` ship the same `libcuvs.so` filename, so they can't share a conda env. Use a fresh env, or `mamba remove libcuvs cuvs` before installing VecFlow's variant.
+
+### Linking the C++ library into your own project
 
 ```cmake
 find_package(cuvs CONFIG REQUIRED)
@@ -41,12 +82,6 @@ target_link_libraries(my_app PRIVATE cuvs::cuvs)
 ```
 
 VecFlow's headers are exposed as `<cuvs/neighbors/vecflow.hpp>`, `<cuvs/neighbors/filtered_bfs.hpp>`, and `cagra::filtered_search` overloads in `<cuvs/neighbors/cagra.hpp>`.
-
-### Coexistence with upstream cuVS
-
-`libcuvs-vecflow-cu12` and rapidsai's stock `libcuvs` ship the same `libcuvs.so` filename, so they can't share a conda env. Use a fresh env, or `mamba remove libcuvs cuvs` before installing VecFlow's variant.
-
-(Python users: `mamba install ... vecflow-cu12` pulls `libcuvs-vecflow-cu12` in transitively — see the [top-level README](../README.md).)
 
 ## API Usage
 
@@ -146,55 +181,13 @@ The full set of public APIs:
 - `cuvs::neighbors::filtered_bfs::{build_filtered_bfs, search_filtered_bfs}` — IVF-Flat with one-probe label gate; `search_filtered_bfs` accepts optional `dataset_labels_ptr`/`dataset_label_offsets_ptr`/`query_labels_second_ptr` for inline AND filtering
 - `cuvs::neighbors::cagra::filtered_search` — CAGRA with per-query label gating; same optional trailing pointers for inline AND filtering
 
-## 1. Building from Source
-
-### Environment setup
+## 1. Dataset Setup (SIFT1M)
 
 ```bash
-# CUDA 12.9 (x86_64). Other env files in the same dir cover aarch64 + CUDA 13.1.
-conda env create --name vecflow -f ../conda/environments/all_cuda-129_arch-x86_64.yaml
-conda activate vecflow
+./examples/download_dataset.sh
 ```
 
-### Build the cuVS C++ library
-
-From the VecFlow repo root:
-
-```bash
-cd ..
-./build.sh libcuvs --install
-```
-
-Produces `libcuvs.so` (with the VecFlow patches integrated) and installs it
-into `$CONDA_PREFIX/lib/`.
-
-### Build the Python package
-
-```bash
-cd vecflow
-./build.sh python                  # convenience wrapper
-```
-
-`scikit-build-core` drives a CMake build of the pybind11 module against the
-just-installed `libcuvs.so`, then packages the resulting `.so` into a wheel
-that's installed into the active env.
-
-Verify:
-
-```bash
-python -c "import vecflow; print(vecflow.__version__); print(vecflow.VecFlow())"
-```
-
-## 2. Dataset Setup (SIFT1M)
-
-```bash
-pip install gdown
-mkdir -p examples/datasets/sift1M
-gdown 'https://drive.google.com/drive/folders/1v4PfcefSKQvJzDz_5BnRzaPSIk4CEQ_S?usp=sharing' \
-      -O examples/datasets/ --folder
-```
-
-### Files you should end up with
+Files land in `examples/datasets/sift1M/`:
 
 | File | Purpose |
 |---|---|
@@ -203,13 +196,20 @@ gdown 'https://drive.google.com/drive/folders/1v4PfcefSKQvJzDz_5BnRzaPSIk4CEQ_S?
 | `base.txt` / `base.spmat` | labels for base vectors |
 | `query.txt` / `query.spmat` | labels for query vectors |
 
+Ground truth is **not** downloaded — the example computes it on the GPU at run
+time and caches it as `groundtruth.neighbors.10.ibin` next to the dataset, so
+subsequent runs skip the brute-force pass.
+
+The script installs `gdown` via `pip --user` if it isn't already on PATH.
+Re-running is safe — it skips files that already exist with non-zero size.
+
 ### Label formats
 
 **Text (`.txt`)**: one line per data point; labels are comma-separated integers; a single `-1` means "no labels".
 
 **Binary (`.spmat`)**: header (three 64-bit ints — `nrow`, `ncol`, `nnz`) → row pointers (`nrow+1` 64-bit ints) → label values (`nnz` 32-bit ints).
 
-## 3. Configuration
+## 2. Configuration
 
 Both the Python and C++ examples read a JSON config:
 
@@ -241,7 +241,7 @@ Both the Python and C++ examples read a JSON config:
 | `force_rebuild` | ignore cached index files and rebuild |
 | `ivf_graph_fname` / `ivf_bfs_fname` | cache locations for the two index halves |
 
-## 4. Running the Examples
+## 3. Running the Examples
 
 ### Python
 
@@ -253,34 +253,16 @@ python python/vecflow_example.py --config path/to/config.json
 
 ### C++
 
-The C++ example requires the cuVS C++ library installed (step 1 above). A convenience script wraps the cmake/make dance:
+The C++ example binary `VECFLOW_EXAMPLE` is built by `./build.sh examples`
+(see [Install → Build from source](#option-b--build-from-source)). Run it
+with the default config (paths in each `config*.json` are relative to that
+config file's directory, so the binary works from any CWD):
 
 ```bash
-cd vecflow              # repo's vecflow/ subdir, where build.sh lives
-./build.sh examples     # configures + builds; binary lands in examples/cpp/build/VECFLOW_EXAMPLE
+cd examples/cpp/build
+./VECFLOW_EXAMPLE                                       # uses ../config/config.json
+./VECFLOW_EXAMPLE --config ../config/config_wiki.json   # custom config
 ```
-
-Run it with the default config (paths in `config.json` are relative to `examples/cpp/src/`):
-
-```bash
-cd examples/cpp/src
-../build/VECFLOW_EXAMPLE                                # uses ./config.json
-../build/VECFLOW_EXAMPLE --config path/to/config.json   # custom config
-```
-
-`./build.sh` also accepts:
-
-| Command | What |
-|---|---|
-| `./build.sh` | Same as `./build.sh examples` |
-| `./build.sh examples` | Configure + build the C++ example |
-| `./build.sh python` | `pip install .` the Python wrapper into the active env |
-| `./build.sh clean` | Remove `examples/cpp/build/` |
-| `./build.sh examples python` | Both targets in one go |
-| `./build.sh -j 8 examples` | Parallel jobs (default: `nproc`) |
-| `./build.sh -v examples` | Verbose (echoes every command) |
-| `./build.sh -h` | Help |
-
 
 ### What both examples do
 
@@ -354,7 +336,7 @@ The config files (`config_multi.json` in each example dir) point at
 `query_multi.txt` and use a separate `groundtruth.multi.neighbors.10.ibin`
 cache, so the multi-label run won't clobber the single-label ground truth.
 
-## 5. Utility helpers worth knowing
+## 4. Utility helpers worth knowing
 
 **Data loading**:
 - Python — `load_labels_auto()` in `examples/python/vecflow_example.py`

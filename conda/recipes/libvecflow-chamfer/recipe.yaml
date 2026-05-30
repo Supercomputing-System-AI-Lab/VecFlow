@@ -1,0 +1,127 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# rattler-build recipe for the vecflow-chamfer C++ library. Builds and
+# installs:
+#   - libvecflow_chamfer.so          (dataset + indexing + search)
+#   - libvecflow_chamfer_kernels.so  (chamfer scoring kernels)
+#   - include/vecflow_chamfer/*.hpp
+#   - lib/cmake/vecflow_chamfer/*    (rapids_export INSTALL config)
+#
+# Depends on libcuvs-vecflow-cu{12,13} — chamfer links cuvs::cuvs for the
+# anchor CAGRA index. Pinned exactly to the same version so the two packages
+# can only be installed as a matched pair.
+#
+# Output package: libvecflow-chamfer-cu{12,13}, version from vecflow/VERSION
+# (shared with the vecflow package on the same release tag).
+
+schema_version: 1
+
+context:
+  # Version comes from env (set by scripts/local_release_test.sh and CI from
+  # vecflow/VERSION). The fallback keeps the recipe usable standalone.
+  version: ${{ env.get("VECFLOW_VERSION", default="0.2.0") }}
+  cuda_version: ${{ env.get("RAPIDS_CUDA_VERSION", default="12.9") }}
+  cuda_major: ${{ (cuda_version | split("."))[0] }}
+  # cuVS major.minor we're forked off (drives libraft/librmm pin + the
+  # libcuvs-vecflow build-hash key indirectly via the same VERSION file).
+  cuvs_minor: ${{ env.get("CUVS_MINOR_VERSION", default="26.06") }}
+
+package:
+  name: libvecflow-chamfer-cu${{ cuda_major }}
+  version: ${{ version }}
+
+source:
+  path: ../../..
+
+build:
+  number: 0
+  string: cuda${{ cuda_major }}_h${{ hash }}_${{ build_number }}
+  skip:
+    - not linux
+  script:
+    content: |
+      set -euo pipefail
+      # Drive cmake directly. The vecflow-chamfer cpp tree has two libraries
+      # (vecflow_chamfer + vecflow_chamfer_kernels); BUILD_CHAMFER_ONLY=OFF
+      # (the default) gives us both, which is what we want to ship.
+      cmake -S vecflow-chamfer/cpp -B vecflow-chamfer/cpp/build \
+            -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_CUDA_ARCHITECTURES="80-real;90-real;90a-real" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_CHAMFER_ONLY=OFF
+
+      # Build both libraries. `all` is fine here — the chamfer tree is small
+      # and has no test/bench/MG subtargets to gate behind flags.
+      cmake --build vecflow-chamfer/cpp/build --parallel ${PARALLEL_LEVEL:-8}
+
+      # `cmake --install` runs every install() rule in cpp/CMakeLists.txt:
+      #   - TARGETS vecflow_chamfer_kernels vecflow_chamfer  -> lib/
+      #   - DIRECTORY include/vecflow_chamfer                 -> include/
+      #   - rapids_export INSTALL                             -> lib/cmake/
+      cmake --install vecflow-chamfer/cpp/build
+    env:
+      PARALLEL_LEVEL: ${{ env.get("PARALLEL_LEVEL", default="8") }}
+      CMAKE_GENERATOR: Ninja
+
+requirements:
+  build:
+    - ${{ compiler("c") }}
+    - ${{ compiler("cxx") }}
+    - ${{ compiler("cuda") }}
+    - cuda-version =${{ cuda_version }}
+    - cmake >=3.30.4
+    - ninja
+    - ${{ stdlib("c") }}
+  host:
+    - cuda-version =${{ cuda_version }}
+    - cuda-cudart-dev
+    - cuda-nvrtc-dev
+    - libcublas-dev
+    - libcurand-dev
+    - libcusolver-dev
+    - libcusparse-dev
+    - libnvjitlink-dev
+    - libraft-headers =${{ cuvs_minor }}
+    - librmm =${{ cuvs_minor }}
+    # Strict pin to the matching libcuvs-vecflow: chamfer's link interface
+    # references cuvs::cuvs, so the two SO versions must move together.
+    - libcuvs-vecflow-cu${{ cuda_major }} =${{ version }}
+  run:
+    - ${{ pin_compatible("cuda-version", upper_bound="x", lower_bound="x") }}
+    - libcuvs-vecflow-cu${{ cuda_major }} =${{ version }}
+    - libraft-headers =${{ cuvs_minor }}
+    - librmm =${{ cuvs_minor }}
+    - cuda-nvrtc
+    - libcublas
+    - libcurand
+    - libcusolver
+    - libcusparse
+  ignore_run_exports:
+    by_name:
+      - cuda-cudart
+      - cuda-nvrtc
+      - cuda-version
+      - libcublas
+      - libcurand
+      - libcusolver
+      - libcusparse
+      - librmm
+
+about:
+  homepage: https://github.com/Supercomputing-System-AI-Lab/VecFlow
+  license: Apache-2.0
+  summary: vecflow-chamfer C++ library — multi-vector retrieval on GPUs
+  description: |
+    libvecflow_chamfer.so + libvecflow_chamfer_kernels.so, built from the
+    vecflow-chamfer tree in the VecFlow repo. Two-stage multi-vector
+    (ColBERT-style) retrieval pipeline: MaxIVF anchor index (CAGRA-routed)
+    for candidate generation, then a fused chamfer-scoring kernel for
+    full-precision reranking. Document embeddings stay in host RAM and the
+    GPU reads them over C2C (Grace-Hopper) or via managed memory
+    (PCIe-attached GPUs) — the allocator is auto-selected at dataset load.
+
+    Depends on libcuvs-vecflow-cuXX of the same version. Install both via:
+
+        mamba install -c VecFlow -c rapidsai-nightly -c rapidsai \
+                      -c conda-forge libvecflow-chamfer-cu12
