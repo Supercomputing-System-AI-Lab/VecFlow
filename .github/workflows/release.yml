@@ -125,10 +125,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { runner: ubuntu-24.04,     subdir: linux-64,      arch: x86_64  }
-          - { runner: ubuntu-24.04-arm, subdir: linux-aarch64, arch: aarch64 }
+        # `subdir` and `python` are the two real axes (2 × 4 = 8 jobs).
+        # `include` only enriches each combination with the matching
+        # `runner` + `arch` — it does NOT define the arch axis itself.
+        # If `subdir`/`arch` live inside `include` while `python` is the lone
+        # base axis, GitHub's matrix rules merge both include entries into
+        # every `python` combination and the second (aarch64) overwrites the
+        # first (linux-64): 4 jobs, all aarch64 — no linux-64 wheels shipped.
+        subdir: [linux-64, linux-aarch64]
         python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - { subdir: linux-64,      runner: ubuntu-24.04,     arch: x86_64  }
+          - { subdir: linux-aarch64, runner: ubuntu-24.04-arm, arch: aarch64 }
 
     runs-on: ${{ matrix.runner }}
 
@@ -279,10 +287,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { runner: ubuntu-24.04,     subdir: linux-64,      arch: x86_64  }
-          - { runner: ubuntu-24.04-arm, subdir: linux-aarch64, arch: aarch64 }
+        # Two real axes (subdir × python = 8 jobs); `include` only enriches
+        # each with runner/arch. See build-py for why subdir must NOT live
+        # inside `include` (aarch64 would overwrite linux-64 in every combo).
+        subdir: [linux-64, linux-aarch64]
         python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - { subdir: linux-64,      runner: ubuntu-24.04,     arch: x86_64  }
+          - { subdir: linux-aarch64, runner: ubuntu-24.04-arm, arch: aarch64 }
 
     runs-on: ${{ matrix.runner }}
 
@@ -361,15 +373,23 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Install pixi
-        run: |
-          curl -fsSL https://pixi.sh/install.sh | sh
-          echo "$HOME/.pixi/bin" >> $GITHUB_PATH
-
-      # Pin to v1 — v2 deprecated the `anaconda upload --user <org>`
-      # syntax used below. Revisit after we've validated v2 flag names.
+      # Pin to v1 — v2 deprecated the `anaconda upload --user <org>` syntax
+      # used below. Revisit after we've validated v2 flag names.
+      #
+      # Use `pip install --user` (not pixi, not pipx):
+      #   * pixi v0.30+ doesn't auto-expose binaries whose name differs from
+      #     the package name — `anaconda` would not land on PATH.
+      #   * pipx on the GH ubuntu-24.04 image is configured with
+      #     PIPX_BIN_DIR=/opt/pipx_bin (root-owned), so a non-root install
+      #     does not reliably surface the binary either.
+      # pip --user drops the binary in ~/.local/bin; we explicitly append
+      # that to $GITHUB_PATH so subsequent steps can find `anaconda`.
+      # --break-system-packages is required because ubuntu-24.04's system
+      # Python is PEP 668-marked.
       - name: Install anaconda-client (v1)
-        run: pixi global install 'anaconda-client<2'
+        run: |
+          python3 -m pip install --break-system-packages --user 'anaconda-client<2'
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
