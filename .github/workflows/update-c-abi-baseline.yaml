@@ -1,13 +1,10 @@
 name: C ABI Update Baseleine
 
+# Upstream cuVS C-ABI tooling, kept for cuVS-sync reference. The push-to-main
+# trigger was removed so pushes touching c/include or ci/check_c_abi don't
+# auto-run cuVS C-ABI baselining; manual-only via workflow_dispatch.
 on:
   workflow_dispatch:  # Allow manual trigger for bootstrap
-  push:
-    branches:
-      - main
-    paths:
-      - 'c/include/**'
-      - 'ci/check_c_abi/**'
 
 jobs:
   # Extract and store baseline ABI from main branch

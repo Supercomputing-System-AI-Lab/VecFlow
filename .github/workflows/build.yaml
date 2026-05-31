@@ -1,10 +1,14 @@
 name: build
 
+# Upstream cuVS CI — runs on RAPIDS' private self-hosted runner fleet
+# (linux-amd64-cpu16, gpu-l4-latest-1, …) that this fork can't reach, so it
+# is kept dormant for cuVS-sync reference only. The push-to-main / release/*
+# triggers were removed (they parked jobs on missing runners forever); the
+# cuVS-style tag pattern below never matches VecFlow's v0.X.Y tags, so in
+# practice this fires only via manual workflow_dispatch. VecFlow's real
+# release pipeline is release.yml.
 on:
   push:
-    branches:
-      - "main"
-      - "release/*"
     tags:
       - v[0-9][0-9].[0-9][0-9].[0-9][0-9]
   workflow_dispatch:

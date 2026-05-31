@@ -1,8 +1,10 @@
 name: pr
+# Upstream cuVS PR gate — targets RAPIDS' self-hosted runners unavailable in
+# this fork. Kept for cuVS-sync reference; trigger neutralized to manual-only
+# (the original "pull-request/[0-9]+" push trigger is a RAPIDS mirror
+# convention that never occurs here anyway). VecFlow CI lives in release.yml.
 on:
-  push:
-    branches:
-      - "pull-request/[0-9]+"
+  workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

@@ -1,15 +1,11 @@
 name: Trigger Breaking Change Notifications
 
-# `zizmor` always flags these triggers because they are easy to use
-# incorrectly. These usages are ok and don't execute any PR-specific
-# code (and so aren't susceptible to exploits from forked PRs)
-on: # zizmor: ignore[dangerous-triggers]
-  pull_request_target:
-    types:
-      - closed
-      - reopened
-      - labeled
-      - unlabeled
+# Upstream RAPIDS Slack alerting (posts to NVIDIA's #breaking-change channel
+# via a secret this fork doesn't hold). Kept for cuVS-sync reference; the
+# pull_request_target trigger was removed so VecFlow PRs don't fire it.
+# Manual-only via workflow_dispatch.
+on:
+  workflow_dispatch:
 
 jobs:
   trigger-notifier:

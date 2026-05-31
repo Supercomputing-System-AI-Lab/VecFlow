@@ -1,8 +1,9 @@
 name: Archive C ABI Baseline for Release
 
+# Upstream cuVS C-ABI tooling, kept for cuVS-sync reference. The
+# `release: published` trigger was removed so VecFlow releases don't kick off
+# cuVS C-ABI archiving; manual-only via workflow_dispatch.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       version:
